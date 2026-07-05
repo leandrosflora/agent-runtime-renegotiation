@@ -4,7 +4,7 @@
     <SchemaVersion>2.0</SchemaVersion>
     <ProjectGuid>85939529-8968-486f-8255-cbb3ce7a5e4b</ProjectGuid>
     <ProjectHome>.</ProjectHome>
-    <StartupFile>agent_runtime_renegotiation.py</StartupFile>
+    <StartupFile>app\main.py</StartupFile>
     <SearchPath>
     </SearchPath>
     <WorkingDirectory>.</WorkingDirectory>
@@ -21,7 +21,39 @@
     <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="agent_runtime_renegotiation.py" />
+    <Compile Include="app\__init__.py" />
+    <Compile Include="app\main.py" />
+    <Compile Include="app\config.py" />
+    <Compile Include="app\models.py" />
+    <Compile Include="app\logging_setup.py" />
+    <Compile Include="app\agent\__init__.py" />
+    <Compile Include="app\agent\core.py" />
+    <Compile Include="app\agent\prompts.py" />
+    <Compile Include="app\tools\__init__.py" />
+    <Compile Include="app\tools\knowledge.py" />
+    <Compile Include="app\tools\tool_service.py" />
+    <Compile Include="app\events\__init__.py" />
+    <Compile Include="app\events\publisher.py" />
+    <Compile Include="tests\test_process_endpoint.py" />
+    <Compile Include="tests\agent\test_core.py" />
+    <Compile Include="tests\tools\test_knowledge.py" />
+    <Compile Include="tests\tools\test_tool_service.py" />
+    <Compile Include="tests\events\test_publisher.py" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="requirements.txt" />
+    <Content Include="requirements-dev.txt" />
+    <Content Include="pyproject.toml" />
+  </ItemGroup>
+  <ItemGroup>
+    <Folder Include="app\" />
+    <Folder Include="app\agent\" />
+    <Folder Include="app\events\" />
+    <Folder Include="app\tools\" />
+    <Folder Include="tests\" />
+    <Folder Include="tests\agent\" />
+    <Folder Include="tests\events\" />
+    <Folder Include="tests\tools\" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
   <!-- Uncomment the CoreCompile target to enable the Build command in

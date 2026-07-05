@@ -316,6 +316,16 @@ paket-files/
 __pycache__/
 *.pyc
 
+# Python virtual environment
+.venv/
+venv/
+
+# Pytest
+.pytest_cache/
+
+# Environment variables
+.env
+
 # Cake - Uncomment if you are using it
 # tools/**
 # !tools/packages.config
