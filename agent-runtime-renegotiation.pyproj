@@ -60,8 +60,8 @@
   <ItemGroup>
     <Interpreter Include=".venv\">
       <Id>.venv</Id>
-      <Version>3.14</Version>
-      <Description>.venv (Python 3.14 (64-bit))</Description>
+      <Version>3.12</Version>
+      <Description>.venv (Python 3.12 (64-bit))</Description>
       <InterpreterPath>Scripts\python.exe</InterpreterPath>
       <WindowsInterpreterPath>Scripts\pythonw.exe</WindowsInterpreterPath>
       <PathEnvironmentVariable>PYTHONPATH</PathEnvironmentVariable>
