@@ -7,6 +7,10 @@ class Settings(BaseSettings):
     bedrock_model_id: str = "anthropic.claude-3-5-sonnet-20241022-v2:0"
     bedrock_region: str = "us-east-1"
 
+    # Bypasses Bedrock entirely and returns a canned AgentDecision from keyword matching,
+    # for local/E2E testing before real Bedrock credentials are available.
+    mock_agent_enabled: bool = False
+
     tool_service_mcp_url: str = "http://localhost:8400/mcp"
 
     knowledge_service_base_url: str = "http://localhost:8500"
