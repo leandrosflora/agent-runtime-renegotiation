@@ -29,6 +29,8 @@ class Settings(BaseSettings):
 
     confidence_threshold: float = 0.6
 
+    otel_otlp_endpoint: str = "http://localhost:4317"
+
 
 def get_settings() -> Settings:
     return Settings()
