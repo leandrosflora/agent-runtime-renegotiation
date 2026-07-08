@@ -20,7 +20,7 @@ async def mock_client():
         app.state.settings = original_get_settings()
 
 
-async def test_mock_mode_returns_decision_without_calling_bedrock(mock_client: httpx.AsyncClient):
+async def test_mock_mode_returns_decision_without_calling_openai(mock_client: httpx.AsyncClient):
     response = await mock_client.post(
         "/process",
         json={

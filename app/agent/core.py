@@ -4,7 +4,7 @@ import logging
 from typing import Any
 
 from strands import Agent
-from strands.models import BedrockModel
+from strands.models import OpenAIModel
 
 from app.agent.prompts import SYSTEM_PROMPT
 from app.config import Settings
@@ -17,7 +17,11 @@ LOW_CONFIDENCE_REASON = "low_confidence"
 
 
 def build_agent(settings: Settings, tools: list[Any] | None = None) -> Agent:
-    model = BedrockModel(model_id=settings.bedrock_model_id, region_name=settings.bedrock_region)
+    model = OpenAIModel(
+        client_args={"api_key": settings.openai_api_key},
+        model_id=settings.openai_model_id,
+        params={"max_tokens": settings.openai_max_tokens},
+    )
     return Agent(model=model, system_prompt=SYSTEM_PROMPT, tools=tools or [])
 
 

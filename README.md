@@ -2,14 +2,14 @@
 
 Runtime de agente de IA para jornada de renegociação de dívidas via canais conversacionais, como WhatsApp.
 
-Este serviço recebe uma solicitação do `conversation-orchestrator`, executa um agente com Amazon Bedrock via Strands Agents, consulta ferramentas MCP e base de conhecimento quando necessário, retorna uma decisão estruturada e publica evento de processamento no Kafka.
+Este serviço recebe uma solicitação do `conversation-orchestrator`, executa um agente com OpenAI via Strands Agents, consulta ferramentas MCP e base de conhecimento quando necessário, retorna uma decisão estruturada e publica evento de processamento no Kafka.
 
 ## Visão geral
 
 ```mermaid
 flowchart LR
     Orchestrator[Conversation Orchestrator] -->|POST /process| Runtime[Agent Runtime Renegotiation]
-    Runtime -->|LLM inference| Bedrock[Amazon Bedrock]
+    Runtime -->|LLM inference| OpenAI[OpenAI]
     Runtime -->|MCP tools| ToolService[Tool Service MCP]
     Runtime -->|GET /search| Knowledge[Knowledge Service]
     Runtime -->|agent.events| Kafka[(Kafka)]
@@ -22,7 +22,7 @@ flowchart LR
 - FastAPI
 - Uvicorn
 - Strands Agents
-- Amazon Bedrock
+- OpenAI
 - MCP client
 - HTTPX
 - Tenacity
@@ -119,8 +119,8 @@ O serviço usa `pydantic-settings`, com suporte a variáveis de ambiente.
 
 | Variável | Default | Descrição |
 |---|---:|---|
-| `BEDROCK_MODEL_ID` | `anthropic.claude-3-5-sonnet-20241022-v2:0` | Modelo usado no Amazon Bedrock. |
-| `BEDROCK_REGION` | `us-east-1` | Região AWS do Bedrock. |
+| `OPENAI_API_KEY` | (vazio) | Chave de API da OpenAI. Obrigatória com `MOCK_AGENT_ENABLED=false`. |
+| `OPENAI_MODEL_ID` | `gpt-4o-mini` | Modelo usado na OpenAI. |
 | `TOOL_SERVICE_MCP_URL` | `http://localhost:8400/mcp` | Endpoint MCP do Tool Service. |
 | `KNOWLEDGE_SERVICE_BASE_URL` | `http://localhost:8500` | Base URL do Knowledge Service. |
 | `KNOWLEDGE_SERVICE_RETRY_ATTEMPTS` | `2` | Tentativas adicionais para busca na base de conhecimento. |
@@ -131,8 +131,8 @@ O serviço usa `pydantic-settings`, com suporte a variáveis de ambiente.
 Exemplo:
 
 ```bash
-export BEDROCK_MODEL_ID="anthropic.claude-3-5-sonnet-20241022-v2:0"
-export BEDROCK_REGION="us-east-1"
+export OPENAI_API_KEY="sk-..."
+export OPENAI_MODEL_ID="gpt-4o-mini"
 export TOOL_SERVICE_MCP_URL="http://localhost:8400/mcp"
 export KNOWLEDGE_SERVICE_BASE_URL="http://localhost:8500"
 export KAFKA_BOOTSTRAP_SERVERS="localhost:9092"
@@ -143,7 +143,7 @@ export KAFKA_BOOTSTRAP_SERVERS="localhost:9092"
 ### Pré-requisitos
 
 - Python 3.9+
-- Credenciais AWS configuradas para acesso ao Amazon Bedrock
+- Chave de API da OpenAI (ou `MOCK_AGENT_ENABLED=true` pra testar sem uma)
 - Kafka local em `localhost:9092`
 - Tool Service MCP disponível ou indisponível de forma tolerada
 - Knowledge Service disponível em `localhost:8500`
@@ -245,9 +245,9 @@ O `pyproject.toml` já aponta os testes para a pasta `tests` e configura `asynci
 
 Chama `POST /process` enviando contexto da conversa e espera um `ProcessResponse` com intenção, confiança, resposta e decisão de handoff.
 
-### Amazon Bedrock
+### OpenAI
 
-Usado pelo Strands Agents via `BedrockModel`.
+Usado pelo Strands Agents via `OpenAIModel`.
 
 ### Tool Service MCP
 
@@ -272,7 +272,7 @@ Recebe o evento `agent.events` com o resultado da decisão do agente.
 ## Próximos passos sugeridos
 
 - Adicionar Dockerfile e docker-compose local.
-- Adicionar health checks para Bedrock, Kafka, Tool Service e Knowledge Service.
+- Adicionar health checks para OpenAI, Kafka, Tool Service e Knowledge Service.
 - Documentar contrato MCP das ferramentas de renegociação.
 - Adicionar exemplos de respostas por intenção.
 - Criar pipeline CI para lint, testes e security scan.

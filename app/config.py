@@ -4,11 +4,16 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_nested_delimiter="__")
 
-    bedrock_model_id: str = "anthropic.claude-3-5-sonnet-20241022-v2:0"
-    bedrock_region: str = "us-east-1"
+    openai_api_key: str = ""
+    openai_model_id: str = "gpt-4o-mini"
 
-    # Bypasses Bedrock entirely and returns a canned AgentDecision from keyword matching,
-    # for local/E2E testing before real Bedrock credentials are available.
+    # Caps output tokens per OpenAI completion call. Each tool-calling round trip and the
+    # final reply are separate completions, so this bounds latency per round trip rather
+    # than the whole conversation - lower it further only if replies still run long.
+    openai_max_tokens: int = 600
+
+    # Bypasses the LLM entirely and returns a canned AgentDecision from keyword matching,
+    # for local/E2E testing before a real OpenAI API key is available.
     mock_agent_enabled: bool = False
 
     tool_service_mcp_url: str = "http://localhost:8400/mcp"

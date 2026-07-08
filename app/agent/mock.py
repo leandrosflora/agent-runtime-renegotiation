@@ -10,9 +10,9 @@ _DEBT_KEYWORDS = ("divida", "dívida", "debito", "débito", "boleto", "parcela")
 
 
 def build_mock_decision(text: str | None, journey_stage: str | None, last_intent: str | None) -> AgentDecision:
-    """Deterministic stand-in for invoke_agent's Bedrock call, driven by keyword matching
+    """Deterministic stand-in for invoke_agent's OpenAI call, driven by keyword matching
     on the customer's message. Lets the full webhook -> BFF -> orchestrator -> agent runtime
-    -> reply pipeline be exercised end-to-end without real Bedrock credentials."""
+    -> reply pipeline be exercised end-to-end without a real OpenAI API key."""
 
     normalized = (text or "").lower()
 
