@@ -1,7 +1,9 @@
+import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from opentelemetry import trace
@@ -11,6 +13,7 @@ from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from prometheus_client import Counter, Histogram
 
 from app.agent.core import build_agent, invoke_agent
 from app.agent.mock import build_mock_decision
@@ -19,20 +22,34 @@ from app.context.history import fetch_recent_history
 from app.events.publisher import build_producer, publish_agent_event
 from app.logging_setup import CorrelationIdMiddleware, configure_logging
 from app.models import ProcessRequest, ProcessResponse
+from app.platform import PlatformMiddleware, current_tenant_id, metrics_response
 from app.tools.knowledge import make_knowledge_base_tool
 from app.tools.tool_service import close_tool_service_client, get_tool_service_tools
 
 configure_logging()
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
-# Exports to Jaeger via OTLP. HTTPXClientInstrumentor patches httpx globally, so it also
-# traces the OpenAI SDK's calls and the MCP client's streamable-HTTP calls - both are
-# httpx under the hood - without needing to touch either integration directly.
+AGENT_REQUESTS = Counter(
+    "agent_runtime_requests_total",
+    "Agent processing requests.",
+    ["outcome"],
+)
+AGENT_HANDOFFS = Counter(
+    "agent_runtime_handoffs_total",
+    "Agent decisions requiring human handoff.",
+    ["reason"],
+)
+AGENT_DURATION = Histogram(
+    "agent_runtime_processing_duration_seconds",
+    "End-to-end agent processing duration.",
+)
+
 _tracer_provider = TracerProvider(
-    resource=Resource.create({"service.name": "agent-runtime-renegotiation"})
+    resource=Resource.create({"service.name": settings.internal_auth_service_name})
 )
 _tracer_provider.add_span_processor(
-    BatchSpanProcessor(OTLPSpanExporter(endpoint=get_settings().otel_otlp_endpoint))
+    BatchSpanProcessor(OTLPSpanExporter(endpoint=settings.otel_otlp_endpoint))
 )
 trace.set_tracer_provider(_tracer_provider)
 HTTPXClientInstrumentor().instrument()
@@ -40,7 +57,6 @@ HTTPXClientInstrumentor().instrument()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    settings = get_settings()
     app.state.settings = settings
     app.state.kafka_producer = build_producer(settings)
     yield
@@ -49,54 +65,108 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="agent-runtime-renegotiation", lifespan=lifespan)
 app.add_middleware(CorrelationIdMiddleware)
+app.add_middleware(
+    PlatformMiddleware,
+    settings=settings,
+    public_paths=("/health/live", "/health/ready", "/metrics", "/docs", "/openapi.json", "/redoc"),
+    tenant_required_paths=("/process",),
+)
 FastAPIInstrumentor.instrument_app(app)
 
 
 @app.exception_handler(RequestValidationError)
 async def log_validation_errors(request: Request, exc: RequestValidationError) -> JSONResponse:
-    # FastAPI's default 422 body already reports this, but doesn't log it - and a schema
-    # mismatch on the ConversationOrchestrator -> AgentRuntime contract fails silently
-    # from the caller's point of view (it just sees "non-success status").
-    body = await request.body()
-    logger.warning("Rejected %s: errors=%s body=%s", request.url.path, exc.errors(), body)
+    logger.warning("Rejected %s: errors=%s", request.url.path, exc.errors())
     return JSONResponse(status_code=422, content={"detail": exc.errors()})
+
+
+@app.get("/health/live", include_in_schema=False)
+async def health_live() -> dict[str, str]:
+    return {"status": "live"}
+
+
+@app.get("/health/ready", include_in_schema=False)
+async def health_ready(request: Request) -> JSONResponse:
+    failures: list[str] = []
+    if settings.internal_auth_enabled and not settings.internal_auth_signing_key:
+        failures.append("internal_auth_signing_key_missing")
+    try:
+        await asyncio.to_thread(request.app.state.kafka_producer.list_topics, 1)
+    except Exception:
+        failures.append("kafka_unavailable")
+    return JSONResponse(
+        {"status": "not_ready" if failures else "ready", "failures": failures},
+        status_code=503 if failures else 200,
+    )
+
+
+@app.get("/metrics", include_in_schema=False)
+async def metrics():
+    return metrics_response()
 
 
 @app.post("/process", response_model=ProcessResponse)
 async def process(payload: ProcessRequest, request: Request) -> ProcessResponse:
-    settings = request.app.state.settings
+    header_tenant = current_tenant_id()
+    if header_tenant != payload.tenant_id:
+        raise HTTPException(status_code=400, detail="Tenant header and payload do not match.")
 
-    if settings.mock_agent_enabled:
-        decision = build_mock_decision(
-            text=payload.text,
-            journey_stage=payload.journey_stage,
-            last_intent=payload.last_intent,
-        )
-    else:
-        history = await fetch_recent_history(settings, payload.conversation_id)
-        mcp_client, tool_service_tools = await get_tool_service_tools(settings)
-        try:
-            tools = [*tool_service_tools, make_knowledge_base_tool(settings)]
-            agent = build_agent(settings, tools=tools)
-
-            decision = await invoke_agent(
-                agent,
+    started = time.perf_counter()
+    try:
+        if settings.mock_agent_enabled:
+            decision = build_mock_decision(
                 text=payload.text,
                 journey_stage=payload.journey_stage,
                 last_intent=payload.last_intent,
-                settings=settings,
-                history=history,
             )
-        finally:
-            await close_tool_service_client(mcp_client)
+        else:
+            history = await fetch_recent_history(
+                settings,
+                payload.tenant_id,
+                payload.conversation_id,
+            )
+            mcp_client, tool_service_tools = await get_tool_service_tools(
+                settings,
+                payload.tenant_id,
+            )
+            try:
+                tools = [
+                    *tool_service_tools,
+                    make_knowledge_base_tool(settings, payload.tenant_id),
+                ]
+                agent = build_agent(settings, tools=tools)
+                decision = await invoke_agent(
+                    agent,
+                    text=payload.text,
+                    journey_stage=payload.journey_stage,
+                    last_intent=payload.last_intent,
+                    settings=settings,
+                    history=history,
+                )
+            finally:
+                await close_tool_service_client(mcp_client)
 
-    publish_agent_event(request.app.state.kafka_producer, settings, payload.conversation_id, decision)
+        publish_agent_event(
+            request.app.state.kafka_producer,
+            settings,
+            payload.tenant_id,
+            payload.conversation_id,
+            decision,
+        )
+        AGENT_REQUESTS.labels("success").inc()
+        if decision.requires_handoff:
+            AGENT_HANDOFFS.labels(decision.handoff_reason or "unspecified").inc()
 
-    logger.info(
-        "Processed message for conversation %s: intent=%s requires_handoff=%s",
-        payload.conversation_id,
-        decision.intent,
-        decision.requires_handoff,
-    )
-
-    return ProcessResponse.from_decision(decision)
+        logger.info(
+            "Processed message for tenant %s conversation %s: intent=%s requires_handoff=%s",
+            payload.tenant_id,
+            payload.conversation_id,
+            decision.intent,
+            decision.requires_handoff,
+        )
+        return ProcessResponse.from_decision(decision)
+    except Exception:
+        AGENT_REQUESTS.labels("error").inc()
+        raise
+    finally:
+        AGENT_DURATION.observe(time.perf_counter() - started)
