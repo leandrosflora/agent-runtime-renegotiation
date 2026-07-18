@@ -92,7 +92,7 @@ async def health_ready(request: Request) -> JSONResponse:
     if runtime_settings.internal_auth_enabled and not runtime_settings.internal_auth_signing_key:
         failures.append("internal_auth_signing_key_missing")
     try:
-        await asyncio.to_thread(request.app.state.kafka_producer.list_topics, 1)
+        await asyncio.to_thread(request.app.state.kafka_producer.list_topics, timeout=1)
     except Exception:
         failures.append("kafka_unavailable")
     return JSONResponse(
