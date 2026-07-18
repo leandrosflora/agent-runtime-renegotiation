@@ -87,8 +87,9 @@ async def health_live() -> dict[str, str]:
 
 @app.get("/health/ready", include_in_schema=False)
 async def health_ready(request: Request) -> JSONResponse:
+    runtime_settings = request.app.state.settings
     failures: list[str] = []
-    if settings.internal_auth_enabled and not settings.internal_auth_signing_key:
+    if runtime_settings.internal_auth_enabled and not runtime_settings.internal_auth_signing_key:
         failures.append("internal_auth_signing_key_missing")
     try:
         await asyncio.to_thread(request.app.state.kafka_producer.list_topics, 1)
@@ -107,13 +108,14 @@ async def metrics():
 
 @app.post("/process", response_model=ProcessResponse)
 async def process(payload: ProcessRequest, request: Request) -> ProcessResponse:
+    runtime_settings = request.app.state.settings
     header_tenant = current_tenant_id()
     if header_tenant != payload.tenant_id:
         raise HTTPException(status_code=400, detail="Tenant header and payload do not match.")
 
     started = time.perf_counter()
     try:
-        if settings.mock_agent_enabled:
+        if runtime_settings.mock_agent_enabled:
             decision = build_mock_decision(
                 text=payload.text,
                 journey_stage=payload.journey_stage,
@@ -121,26 +123,26 @@ async def process(payload: ProcessRequest, request: Request) -> ProcessResponse:
             )
         else:
             history = await fetch_recent_history(
-                settings,
+                runtime_settings,
                 payload.tenant_id,
                 payload.conversation_id,
             )
             mcp_client, tool_service_tools = await get_tool_service_tools(
-                settings,
+                runtime_settings,
                 payload.tenant_id,
             )
             try:
                 tools = [
                     *tool_service_tools,
-                    make_knowledge_base_tool(settings, payload.tenant_id),
+                    make_knowledge_base_tool(runtime_settings, payload.tenant_id),
                 ]
-                agent = build_agent(settings, tools=tools)
+                agent = build_agent(runtime_settings, tools=tools)
                 decision = await invoke_agent(
                     agent,
                     text=payload.text,
                     journey_stage=payload.journey_stage,
                     last_intent=payload.last_intent,
-                    settings=settings,
+                    settings=runtime_settings,
                     history=history,
                 )
             finally:
@@ -148,7 +150,7 @@ async def process(payload: ProcessRequest, request: Request) -> ProcessResponse:
 
         publish_agent_event(
             request.app.state.kafka_producer,
-            settings,
+            runtime_settings,
             payload.tenant_id,
             payload.conversation_id,
             decision,
