@@ -8,25 +8,33 @@ import app.main as main_module
 from app.config import Settings, get_settings
 from app.main import app
 
+TENANT_ID = "00000000-0000-0000-0000-000000000001"
+HEADERS = {"X-Tenant-Id": TENANT_ID}
+
 
 @pytest.fixture
 async def mock_client():
     app.dependency_overrides = {}
-    original_get_settings = get_settings
+    original_settings = app.state.settings if hasattr(app.state, "settings") else get_settings()
+    original_auth_enabled = main_module.settings.internal_auth_enabled
+    main_module.settings.internal_auth_enabled = False
     try:
         async with app.router.lifespan_context(app):
-            app.state.settings = Settings(mock_agent_enabled=True)
+            app.state.settings = Settings(mock_agent_enabled=True, internal_auth_enabled=False)
             transport = ASGITransport(app=app)
             async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
                 yield ac
     finally:
-        app.state.settings = original_get_settings()
+        app.state.settings = original_settings
+        main_module.settings.internal_auth_enabled = original_auth_enabled
 
 
 async def test_mock_mode_returns_decision_without_calling_openai(mock_client: httpx.AsyncClient):
     response = await mock_client.post(
         "/process",
+        headers=HEADERS,
         json={
+            "TenantId": TENANT_ID,
             "ConversationId": "5511999990000",
             "MessageType": "Text",
             "Text": "Quero renegociar minha divida",
@@ -49,7 +57,9 @@ async def test_mock_mode_does_not_fetch_conversation_history(
 
     await mock_client.post(
         "/process",
+        headers=HEADERS,
         json={
+            "TenantId": TENANT_ID,
             "ConversationId": "5511999990000",
             "MessageType": "Text",
             "Text": "Quero renegociar minha divida",

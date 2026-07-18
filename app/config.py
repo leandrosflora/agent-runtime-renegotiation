@@ -6,37 +6,31 @@ class Settings(BaseSettings):
 
     openai_api_key: str = ""
     openai_model_id: str = "gpt-4o-mini"
-
-    # Caps output tokens per OpenAI completion call. Each tool-calling round trip and the
-    # final reply are separate completions, so this bounds latency per round trip rather
-    # than the whole conversation - lower it further only if replies still run long.
     openai_max_tokens: int = 600
-
-    # Bypasses the LLM entirely and returns a canned AgentDecision from keyword matching,
-    # for local/E2E testing before a real OpenAI API key is available.
     mock_agent_enabled: bool = False
 
     tool_service_mcp_url: str = "http://localhost:8400/mcp"
+    tool_service_audience: str = "tool-service-renegotiation"
 
     knowledge_service_base_url: str = "http://localhost:8500"
+    knowledge_service_audience: str = "knowledge-service"
     knowledge_service_retry_attempts: int = 2
 
     conversation_memory_service_base_url: str = "http://localhost:8600"
-    # Same fixed seed tenant used everywhere else in this workspace (conversation-orchestrator,
-    # conversation-audit-service, conversation-handoff-service) - no real multi-tenancy exists yet.
-    conversation_memory_tenant_id: str = "00000000-0000-0000-0000-000000000001"
+    conversation_memory_service_audience: str = "conversation-memory-service"
     conversation_memory_history_limit: int = 10
     conversation_memory_retry_attempts: int = 2
 
-    # 9092 is Kafka's PLAINTEXT listener, advertised as "kafka:9092" (only resolvable inside
-    # the Docker network); 29092 is the EXTERNAL listener, advertised as "localhost:29092",
-    # for this service running on the host (e.g. via `uvicorn` outside Docker).
     kafka_bootstrap_servers: str = "localhost:29092"
     kafka_agent_events_topic: str = "agent.events"
-
     confidence_threshold: float = 0.6
-
     otel_otlp_endpoint: str = "http://localhost:4317"
+
+    internal_auth_enabled: bool = True
+    internal_auth_issuer: str = "conversational-ai-platform"
+    internal_auth_service_name: str = "agent-runtime-renegotiation"
+    internal_auth_signing_key: str = ""
+    internal_auth_token_ttl_seconds: int = 300
 
 
 def get_settings() -> Settings:
