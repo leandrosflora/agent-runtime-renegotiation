@@ -4,6 +4,7 @@ import json
 import logging
 
 from confluent_kafka import Producer
+from opentelemetry.propagate import inject
 
 from app.config import Settings
 from app.models import AgentDecision
@@ -16,27 +17,31 @@ def build_producer(settings: Settings) -> Producer:
 
 
 def publish_agent_event(
-    producer: Producer, settings: Settings, conversation_id: str, decision: AgentDecision
+    producer: Producer,
+    settings: Settings,
+    tenant_id: str,
+    conversation_id: str,
+    decision: AgentDecision,
 ) -> None:
-    """Publishes an agent-processing event to Kafka, keyed by conversation_id.
-
-    Never raises: any failure to enqueue or deliver the event is logged and
-    swallowed so a Kafka outage never fails the POST /process request.
-    """
     topic = settings.kafka_agent_events_topic
     event = {
+        "tenant_id": tenant_id,
         "conversation_id": conversation_id,
         "intent": decision.intent,
         "confidence": decision.confidence,
         "requires_handoff": decision.requires_handoff,
         "handoff_reason": decision.handoff_reason,
     }
-
+    trace_carrier: dict[str, str] = {}
+    inject(trace_carrier)
+    headers = [(name, value.encode("utf-8")) for name, value in trace_carrier.items()]
+    headers.append(("tenant-id", tenant_id.encode("utf-8")))
     try:
         producer.produce(
             topic,
             key=conversation_id.encode("utf-8"),
             value=json.dumps(event).encode("utf-8"),
+            headers=headers,
             on_delivery=_make_delivery_callback(conversation_id, topic),
         )
         producer.poll(0)
@@ -53,7 +58,9 @@ def _make_delivery_callback(conversation_id: str, topic: str):
     def _on_delivery(err, _msg) -> None:
         if err is not None:
             logger.error(
-                "Kafka delivery failed for conversation %s on topic %s: %s", conversation_id, topic, err
+                "Kafka delivery failed for conversation %s on topic %s: %s",
+                conversation_id,
+                topic,
+                err,
             )
-
     return _on_delivery
