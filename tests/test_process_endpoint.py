@@ -1,7 +1,10 @@
+from unittest.mock import AsyncMock
+
 import httpx
 import pytest
 from httpx import ASGITransport
 
+import app.main as main_module
 from app.main import app
 
 
@@ -52,3 +55,20 @@ async def test_response_uses_exact_pascal_case_property_names(client: httpx.Asyn
 
     body = response.json()
     assert set(body.keys()) == {"Intent", "Confidence", "ReplyText", "RequiresHandoff", "HandoffReason"}
+
+
+async def test_real_path_fetches_conversation_history(client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch):
+    fetch_mock = AsyncMock(return_value=[])
+    monkeypatch.setattr(main_module, "fetch_recent_history", fetch_mock)
+
+    await client.post(
+        "/process",
+        json={
+            "ConversationId": "5511999990000",
+            "MessageType": "Text",
+            "Text": "Ola, quero renegociar",
+        },
+    )
+
+    fetch_mock.assert_called_once()
+    assert fetch_mock.call_args.args[1] == "5511999990000"

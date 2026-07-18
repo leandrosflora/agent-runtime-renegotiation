@@ -31,8 +31,9 @@ async def invoke_agent(
     journey_stage: str | None,
     last_intent: str | None,
     settings: Settings,
+    history: list[dict] | None = None,
 ) -> AgentDecision:
-    prompt = _build_prompt(text, journey_stage, last_intent)
+    prompt = _build_prompt(text, journey_stage, last_intent, history)
 
     try:
         result = await agent.invoke_async(prompt, structured_output_model=AgentDecision)
@@ -54,12 +55,24 @@ async def invoke_agent(
     return decision
 
 
-def _build_prompt(text: str | None, journey_stage: str | None, last_intent: str | None) -> str:
+def _build_prompt(
+    text: str | None,
+    journey_stage: str | None,
+    last_intent: str | None,
+    history: list[dict] | None = None,
+) -> str:
     context_lines: list[str] = []
     if journey_stage:
         context_lines.append(f"Estagio atual da jornada: {journey_stage}")
     if last_intent:
         context_lines.append(f"Ultima intencao identificada: {last_intent}")
+
+    if history:
+        history_lines = "\n".join(
+            f"{message.get('role', '')}: {message.get('content', {}).get('text', '')}"
+            for message in history
+        )
+        context_lines.append(f"Historico recente da conversa:\n{history_lines}")
 
     context = "\n".join(context_lines)
     message = f"Mensagem do cliente: {text or ''}"

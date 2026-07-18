@@ -15,6 +15,7 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from app.agent.core import build_agent, invoke_agent
 from app.agent.mock import build_mock_decision
 from app.config import get_settings
+from app.context.history import fetch_recent_history
 from app.events.publisher import build_producer, publish_agent_event
 from app.logging_setup import CorrelationIdMiddleware, configure_logging
 from app.models import ProcessRequest, ProcessResponse
@@ -72,6 +73,7 @@ async def process(payload: ProcessRequest, request: Request) -> ProcessResponse:
             last_intent=payload.last_intent,
         )
     else:
+        history = await fetch_recent_history(settings, payload.conversation_id)
         mcp_client, tool_service_tools = await get_tool_service_tools(settings)
         try:
             tools = [*tool_service_tools, make_knowledge_base_tool(settings)]
@@ -83,6 +85,7 @@ async def process(payload: ProcessRequest, request: Request) -> ProcessResponse:
                 journey_stage=payload.journey_stage,
                 last_intent=payload.last_intent,
                 settings=settings,
+                history=history,
             )
         finally:
             await close_tool_service_client(mcp_client)

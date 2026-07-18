@@ -21,6 +21,13 @@ class Settings(BaseSettings):
     knowledge_service_base_url: str = "http://localhost:8500"
     knowledge_service_retry_attempts: int = 2
 
+    conversation_memory_service_base_url: str = "http://localhost:8600"
+    # Same fixed seed tenant used everywhere else in this workspace (conversation-orchestrator,
+    # conversation-audit-service, conversation-handoff-service) - no real multi-tenancy exists yet.
+    conversation_memory_tenant_id: str = "00000000-0000-0000-0000-000000000001"
+    conversation_memory_history_limit: int = 10
+    conversation_memory_retry_attempts: int = 2
+
     # 9092 is Kafka's PLAINTEXT listener, advertised as "kafka:9092" (only resolvable inside
     # the Docker network); 29092 is the EXTERNAL listener, advertised as "localhost:29092",
     # for this service running on the host (e.g. via `uvicorn` outside Docker).

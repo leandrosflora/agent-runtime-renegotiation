@@ -70,3 +70,24 @@ async def test_invoke_agent_high_confidence_does_not_force_handoff():
     result = await invoke_agent(agent, "Ola", None, None, make_settings(confidence_threshold=0.6))
 
     assert result.requires_handoff is False
+
+
+async def test_invoke_agent_includes_history_in_prompt_when_provided():
+    decision = AgentDecision(intent="faq", confidence=0.9, reply_text="Oi!", requires_handoff=False)
+    agent = agent_returning(decision)
+    history = [{"role": "user", "content": {"text": "minha divida esta vencida"}}]
+
+    await invoke_agent(agent, "Ola de novo", None, None, make_settings(), history=history)
+
+    prompt = agent.invoke_async.call_args.args[0]
+    assert "minha divida esta vencida" in prompt
+
+
+async def test_invoke_agent_omitted_history_behaves_exactly_as_before():
+    decision = AgentDecision(intent="faq", confidence=0.9, reply_text="Oi!", requires_handoff=False)
+    agent = agent_returning(decision)
+
+    await invoke_agent(agent, "Ola", None, None, make_settings())
+
+    prompt = agent.invoke_async.call_args.args[0]
+    assert prompt == "Mensagem do cliente: Ola"

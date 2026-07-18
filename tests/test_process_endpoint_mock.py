@@ -1,7 +1,10 @@
+from unittest.mock import AsyncMock
+
 import httpx
 import pytest
 from httpx import ASGITransport
 
+import app.main as main_module
 from app.config import Settings, get_settings
 from app.main import app
 
@@ -36,3 +39,21 @@ async def test_mock_mode_returns_decision_without_calling_openai(mock_client: ht
     body = response.json()
     assert body["Intent"] == "renegotiation_request"
     assert body["RequiresHandoff"] is False
+
+
+async def test_mock_mode_does_not_fetch_conversation_history(
+    mock_client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    fetch_mock = AsyncMock(return_value=[])
+    monkeypatch.setattr(main_module, "fetch_recent_history", fetch_mock)
+
+    await mock_client.post(
+        "/process",
+        json={
+            "ConversationId": "5511999990000",
+            "MessageType": "Text",
+            "Text": "Quero renegociar minha divida",
+        },
+    )
+
+    fetch_mock.assert_not_called()
