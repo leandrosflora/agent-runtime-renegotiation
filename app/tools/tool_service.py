@@ -2,24 +2,36 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 from typing import Any
 
+import httpx
 from mcp.client.streamable_http import streamable_http_client
 from strands.tools.mcp import MCPClient
 
 from app.config import Settings
+from app.platform import create_service_token
 
 logger = logging.getLogger(__name__)
 
 
-async def get_tool_service_tools(settings: Settings) -> tuple[MCPClient | None, list[Any]]:
-    """Connects to the Tool Service's MCP endpoint and lists its tools for this request.
+@asynccontextmanager
+async def _authenticated_transport(settings: Settings, tenant_id: str):
+    token = create_service_token(settings, settings.tool_service_audience)
+    headers = {"Authorization": f"Bearer {token}", "X-Tenant-Id": tenant_id}
+    async with httpx.AsyncClient(headers=headers, timeout=30.0) as http_client:
+        async with streamable_http_client(
+            settings.tool_service_mcp_url,
+            http_client=http_client,
+        ) as transport:
+            yield transport
 
-    Returns (client, tools). If the connection fails, returns (None, []) so the agent
-    can proceed without Tool Service tools rather than failing the request. The caller
-    is responsible for passing the returned client to close_tool_service_client when done.
-    """
-    client = MCPClient(lambda: streamable_http_client(settings.tool_service_mcp_url))
+
+async def get_tool_service_tools(
+    settings: Settings,
+    tenant_id: str,
+) -> tuple[MCPClient | None, list[Any]]:
+    client = MCPClient(lambda: _authenticated_transport(settings, tenant_id))
     try:
         await asyncio.to_thread(client.start)
         tools = await asyncio.to_thread(client.list_tools_sync)
