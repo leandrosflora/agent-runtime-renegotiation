@@ -4,12 +4,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class ProcessRequest(BaseModel):
-    """Wire contract for POST /process, matching exactly what the Conversation
-    Orchestrator's AgentRuntimeClient sends (PascalCase, via plain System.Text.Json
-    defaults - not ASP.NET Core's camelCase "Web" defaults)."""
-
     model_config = ConfigDict(populate_by_name=True)
 
+    tenant_id: str = Field(alias="TenantId")
     conversation_id: str = Field(alias="ConversationId")
     message_type: str = Field(alias="MessageType")
     text: str | None = Field(default=None, alias="Text")
@@ -18,10 +15,6 @@ class ProcessRequest(BaseModel):
 
 
 class AgentDecision(BaseModel):
-    """Internal representation of the agent's decision; also the schema bound to
-    Strands' structured output so the LLM's response is parsed directly into this
-    shape rather than free text."""
-
     intent: str | None = None
     confidence: float = 0.0
     reply_text: str | None = None
@@ -30,9 +23,6 @@ class AgentDecision(BaseModel):
 
 
 class ProcessResponse(BaseModel):
-    """Wire contract for the POST /process response, matching exactly what the
-    Conversation Orchestrator's AgentRuntimeClient expects to deserialize."""
-
     model_config = ConfigDict(populate_by_name=True)
 
     intent: str | None = Field(default=None, alias="Intent")
