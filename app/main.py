@@ -110,8 +110,8 @@ async def metrics():
 async def process(payload: ProcessRequest, request: Request) -> ProcessResponse:
     runtime_settings = request.app.state.settings
     header_tenant = current_tenant_id()
-    if header_tenant != payload.tenant_id:
-        raise HTTPException(status_code=400, detail="Tenant header and payload do not match.")
+    if not header_tenant or header_tenant != payload.tenant_id:
+        raise HTTPException(status_code=400, detail="Tenant header, signed claim, and payload must match.")
 
     started = time.perf_counter()
     try:
@@ -130,6 +130,11 @@ async def process(payload: ProcessRequest, request: Request) -> ProcessResponse:
             mcp_client, tool_service_tools = await get_tool_service_tools(
                 runtime_settings,
                 payload.tenant_id,
+                payload.conversation_id,
+                payload.message_id,
+                payload.journey_stage,
+                payload.journey_version,
+                payload.explicit_confirmation_message_id,
             )
             try:
                 tools = [
@@ -157,12 +162,13 @@ async def process(payload: ProcessRequest, request: Request) -> ProcessResponse:
         )
         AGENT_REQUESTS.labels("success").inc()
         if decision.requires_handoff:
-            AGENT_HANDOFFS.labels(decision.handoff_reason or "unspecified").inc()
+            AGENT_HANDOFFS.labels(_normalize_handoff_reason(decision.handoff_reason)).inc()
 
         logger.info(
-            "Processed message for tenant %s conversation %s: intent=%s requires_handoff=%s",
+            "Processed message for tenant %s conversation %s version %s: intent=%s requires_handoff=%s",
             payload.tenant_id,
             payload.conversation_id,
+            payload.journey_version,
             decision.intent,
             decision.requires_handoff,
         )
@@ -172,3 +178,13 @@ async def process(payload: ProcessRequest, request: Request) -> ProcessResponse:
         raise
     finally:
         AGENT_DURATION.observe(time.perf_counter() - started)
+
+
+def _normalize_handoff_reason(reason: str | None) -> str:
+    known = {
+        "agent_runtime_unavailable",
+        "low_confidence",
+        "customer_requested",
+        "policy_denied",
+    }
+    return reason if reason in known else "other"

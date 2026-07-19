@@ -38,7 +38,11 @@ async def _fetch_with_retry(
         reraise=True,
     )
     async def _call() -> list[dict]:
-        token = create_service_token(settings, settings.conversation_memory_service_audience)
+        token = create_service_token(
+            settings,
+            settings.conversation_memory_service_audience,
+            tenant_id,
+        )
         headers = {
             "Authorization": f"Bearer {token}",
             "X-Tenant-Id": tenant_id,
