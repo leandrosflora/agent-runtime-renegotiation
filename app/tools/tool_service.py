@@ -16,8 +16,28 @@ logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def _authenticated_transport(settings: Settings, tenant_id: str):
-    token = create_service_token(settings, settings.tool_service_audience)
+async def _authenticated_transport(
+    settings: Settings,
+    tenant_id: str,
+    conversation_id: str,
+    message_id: str,
+    journey_stage: str | None,
+    journey_version: int,
+    explicit_confirmation_message_id: str | None,
+):
+    token = create_service_token(
+        settings,
+        settings.tool_service_audience,
+        tenant_id,
+        {
+            "token_use": "tool_execution",
+            "conversation_id": conversation_id,
+            "message_id": message_id,
+            "journey_stage": journey_stage or "Started",
+            "journey_version": journey_version,
+            "confirmation_message_id": explicit_confirmation_message_id,
+        },
+    )
     headers = {"Authorization": f"Bearer {token}", "X-Tenant-Id": tenant_id}
     async with httpx.AsyncClient(headers=headers, timeout=30.0) as http_client:
         async with streamable_http_client(
@@ -30,8 +50,23 @@ async def _authenticated_transport(settings: Settings, tenant_id: str):
 async def get_tool_service_tools(
     settings: Settings,
     tenant_id: str,
+    conversation_id: str,
+    message_id: str,
+    journey_stage: str | None,
+    journey_version: int,
+    explicit_confirmation_message_id: str | None,
 ) -> tuple[MCPClient | None, list[Any]]:
-    client = MCPClient(lambda: _authenticated_transport(settings, tenant_id))
+    client = MCPClient(
+        lambda: _authenticated_transport(
+            settings,
+            tenant_id,
+            conversation_id,
+            message_id,
+            journey_stage,
+            journey_version,
+            explicit_confirmation_message_id,
+        )
+    )
     try:
         await asyncio.to_thread(client.start)
         tools = await asyncio.to_thread(client.list_tools_sync)
