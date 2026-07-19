@@ -37,7 +37,7 @@ async def _search_with_retry(settings: Settings, tenant_id: str, query: str) -> 
         reraise=True,
     )
     async def _call() -> list[dict]:
-        token = create_service_token(settings, settings.knowledge_service_audience)
+        token = create_service_token(settings, settings.knowledge_service_audience, tenant_id)
         headers = {"Authorization": f"Bearer {token}", "X-Tenant-Id": tenant_id}
         async with httpx.AsyncClient(
             base_url=settings.knowledge_service_base_url,
