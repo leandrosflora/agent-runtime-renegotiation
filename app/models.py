@@ -8,10 +8,16 @@ class ProcessRequest(BaseModel):
 
     tenant_id: str = Field(alias="TenantId")
     conversation_id: str = Field(alias="ConversationId")
+    message_id: str = Field(alias="MessageId")
     message_type: str = Field(alias="MessageType")
     text: str | None = Field(default=None, alias="Text")
     journey_stage: str | None = Field(default=None, alias="JourneyStage")
+    journey_version: int = Field(default=0, ge=0, alias="JourneyVersion")
     last_intent: str | None = Field(default=None, alias="LastIntent")
+    explicit_confirmation_message_id: str | None = Field(
+        default=None,
+        alias="ExplicitConfirmationMessageId",
+    )
 
 
 class AgentDecision(BaseModel):
