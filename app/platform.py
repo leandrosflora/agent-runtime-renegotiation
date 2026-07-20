@@ -48,8 +48,9 @@ def create_service_token(
     tenant_id: str,
     extra_claims: Mapping[str, Any] | None = None,
 ) -> str:
-    if settings.internal_auth_enabled and not settings.internal_auth_signing_key:
-        raise RuntimeError("INTERNAL_AUTH_SIGNING_KEY is required when internal auth is enabled")
+    secret = settings.internal_auth_outbound_secrets.get(audience)
+    if settings.internal_auth_enabled and (not secret or len(secret.encode("utf-8")) < 32):
+        raise RuntimeError(f"No valid outbound secret configured for audience '{audience}'")
     canonical_tenant = normalize_tenant_id(tenant_id)
     now = datetime.now(timezone.utc)
     payload: dict[str, Any] = {
@@ -67,8 +68,9 @@ def create_service_token(
             payload[name] = value
     return jwt.encode(
         payload,
-        settings.internal_auth_signing_key,
+        secret or "",
         algorithm="HS256",
+        headers={"kid": settings.internal_auth_service_name},
     )
 
 
@@ -187,16 +189,27 @@ class PlatformMiddleware:
     def _authenticate(self, authorization: str | None) -> dict[str, Any] | JSONResponse:
         if not self.settings.internal_auth_enabled:
             return {"sub": "auth-disabled"}
-        if not self.settings.internal_auth_signing_key:
+        if not self.settings.internal_auth_inbound_secrets:
             AUTH_FAILURES.labels(self.settings.internal_auth_service_name, "server_misconfigured").inc()
             return JSONResponse({"detail": "Internal authentication is not configured."}, status_code=503)
         if not authorization or not authorization.startswith("Bearer "):
             AUTH_FAILURES.labels(self.settings.internal_auth_service_name, "missing_token").inc()
             return JSONResponse({"detail": "Missing bearer token."}, status_code=401)
+        token = authorization.removeprefix("Bearer ").strip()
+        try:
+            unverified_header = jwt.get_unverified_header(token)
+        except jwt.PyJWTError:
+            AUTH_FAILURES.labels(self.settings.internal_auth_service_name, "invalid_token").inc()
+            return JSONResponse({"detail": "Invalid bearer token."}, status_code=401)
+        kid = unverified_header.get("kid")
+        secret = self.settings.internal_auth_inbound_secrets.get(kid) if kid else None
+        if not secret or len(secret.encode("utf-8")) < 32:
+            AUTH_FAILURES.labels(self.settings.internal_auth_service_name, "unknown_caller").inc()
+            return JSONResponse({"detail": "Unknown or unconfigured caller."}, status_code=401)
         try:
             claims = jwt.decode(
-                authorization.removeprefix("Bearer ").strip(),
-                self.settings.internal_auth_signing_key,
+                token,
+                secret,
                 algorithms=["HS256"],
                 audience=self.settings.internal_auth_service_name,
                 issuer=self.settings.internal_auth_issuer,
@@ -208,6 +221,9 @@ class PlatformMiddleware:
         except jwt.PyJWTError:
             AUTH_FAILURES.labels(self.settings.internal_auth_service_name, "invalid_token").inc()
             return JSONResponse({"detail": "Invalid bearer token."}, status_code=401)
+        if claims.get("sub") != kid:
+            AUTH_FAILURES.labels(self.settings.internal_auth_service_name, "kid_sub_mismatch").inc()
+            return JSONResponse({"detail": "Token subject does not match signing key identifier."}, status_code=401)
         return claims
 
 

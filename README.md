@@ -109,7 +109,7 @@ Respostas de erro: `400` se `X-Tenant-Id`/claim/`TenantId` do payload não bater
 
 ### `GET /health/live`, `GET /health/ready`
 
-`/health/ready` verifica a chave de assinatura JWT interna.
+`/health/ready` verifica se todos os segredos JWT internos (outbound por audiência, inbound por chamador) estão configurados.
 
 ## Regras de decisão
 

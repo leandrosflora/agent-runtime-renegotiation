@@ -89,8 +89,19 @@ async def health_live() -> dict[str, str]:
 async def health_ready(request: Request) -> JSONResponse:
     runtime_settings = request.app.state.settings
     failures: list[str] = []
-    if runtime_settings.internal_auth_enabled and not runtime_settings.internal_auth_signing_key:
-        failures.append("internal_auth_signing_key_missing")
+    if runtime_settings.internal_auth_enabled:
+        for audience in (
+            runtime_settings.tool_service_audience,
+            runtime_settings.knowledge_service_audience,
+            runtime_settings.conversation_memory_service_audience,
+        ):
+            secret = runtime_settings.internal_auth_outbound_secrets.get(audience)
+            if not secret or len(secret.encode("utf-8")) < 32:
+                failures.append(f"internal_auth_outbound_secret_missing:{audience}")
+        for caller in ("conversation-orchestrator",):
+            secret = runtime_settings.internal_auth_inbound_secrets.get(caller)
+            if not secret or len(secret.encode("utf-8")) < 32:
+                failures.append(f"internal_auth_inbound_secret_missing:{caller}")
     try:
         await asyncio.to_thread(request.app.state.kafka_producer.list_topics, timeout=1)
     except Exception:
