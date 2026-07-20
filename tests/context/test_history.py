@@ -13,7 +13,7 @@ def make_settings(retry_attempts: int = 1) -> Settings:
         conversation_memory_service_audience="conversation-memory-service",
         conversation_memory_history_limit=10,
         conversation_memory_retry_attempts=retry_attempts,
-        internal_auth_signing_key="test-signing-key-with-more-than-32-bytes",
+        internal_auth_outbound_secrets={"conversation-memory-service": "test-signing-key-with-more-than-32-bytes"},
     )
 
 

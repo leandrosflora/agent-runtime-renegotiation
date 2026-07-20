@@ -29,7 +29,8 @@ class Settings(BaseSettings):
     internal_auth_enabled: bool = True
     internal_auth_issuer: str = "conversational-ai-platform"
     internal_auth_service_name: str = "agent-runtime-renegotiation"
-    internal_auth_signing_key: str = ""
+    internal_auth_outbound_secrets: dict[str, str] = {}
+    internal_auth_inbound_secrets: dict[str, str] = {}
     internal_auth_token_ttl_seconds: int = 300
 
 

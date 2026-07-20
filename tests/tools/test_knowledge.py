@@ -9,7 +9,7 @@ def make_settings(retry_attempts: int = 1) -> Settings:
     return Settings(
         knowledge_service_base_url="http://knowledge.test",
         knowledge_service_retry_attempts=retry_attempts,
-        internal_auth_signing_key="test-signing-key-with-more-than-32-bytes",
+        internal_auth_outbound_secrets={"knowledge-service": "test-signing-key-with-more-than-32-bytes"},
     )
 
 
