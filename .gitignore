@@ -319,6 +319,7 @@ __pycache__/
 # Python virtual environment
 .venv/
 venv/
+.venv-ci/
 
 # Pytest
 .pytest_cache/

@@ -31,6 +31,7 @@ async def test_valid_request_is_accepted(client: httpx.AsyncClient):
         json={
             "TenantId": TENANT_ID,
             "ConversationId": "5511999990000",
+            "MessageId": "wamid.1",
             "MessageType": "Text",
             "Text": "Ola, quero renegociar",
             "JourneyStage": "started",
@@ -60,6 +61,7 @@ async def test_response_uses_exact_pascal_case_property_names(client: httpx.Asyn
         json={
             "TenantId": TENANT_ID,
             "ConversationId": "5511999990000",
+            "MessageId": "wamid.2",
             "MessageType": "Text",
             "Text": "Ola",
         },
@@ -78,6 +80,7 @@ async def test_real_path_fetches_conversation_history(client: httpx.AsyncClient,
         json={
             "TenantId": TENANT_ID,
             "ConversationId": "5511999990000",
+            "MessageId": "wamid.3",
             "MessageType": "Text",
             "Text": "Ola, quero renegociar",
         },

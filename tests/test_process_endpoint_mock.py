@@ -36,6 +36,7 @@ async def test_mock_mode_returns_decision_without_calling_openai(mock_client: ht
         json={
             "TenantId": TENANT_ID,
             "ConversationId": "5511999990000",
+            "MessageId": "wamid.4",
             "MessageType": "Text",
             "Text": "Quero renegociar minha divida",
             "JourneyStage": None,
