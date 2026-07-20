@@ -14,7 +14,7 @@ def test_publish_agent_event_success_produces_keyed_message():
     producer = MagicMock()
     decision = AgentDecision(intent="faq", confidence=0.9, reply_text="Oi!", requires_handoff=False)
 
-    publish_agent_event(producer, make_settings(), "5511999990000", decision)
+    publish_agent_event(producer, make_settings(), "00000000-0000-0000-0000-000000000001", "5511999990000", decision)
 
     producer.produce.assert_called_once()
     _, kwargs = producer.produce.call_args
@@ -30,7 +30,7 @@ def test_publish_agent_event_published_for_fallback_decision():
     producer = MagicMock()
     decision = AgentDecision(requires_handoff=True, handoff_reason="agent_runtime_unavailable")
 
-    publish_agent_event(producer, make_settings(), "5511999990000", decision)
+    publish_agent_event(producer, make_settings(), "00000000-0000-0000-0000-000000000001", "5511999990000", decision)
 
     producer.produce.assert_called_once()
     _, kwargs = producer.produce.call_args
@@ -44,4 +44,4 @@ def test_publish_agent_event_broker_unavailable_does_not_raise():
     producer.produce.side_effect = RuntimeError("broker unavailable")
     decision = AgentDecision(intent="faq", confidence=0.9)
 
-    publish_agent_event(producer, make_settings(), "5511999990000", decision)  # should not raise
+    publish_agent_event(producer, make_settings(), "00000000-0000-0000-0000-000000000001", "5511999990000", decision)  # should not raise

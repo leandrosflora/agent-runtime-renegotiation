@@ -13,7 +13,15 @@ async def test_get_tool_service_tools_success_returns_client_and_tools():
     fake_client.list_tools_sync.return_value = ["tool-a", "tool-b"]
 
     with patch("app.tools.tool_service.MCPClient", return_value=fake_client):
-        client, tools = await get_tool_service_tools(make_settings())
+        client, tools = await get_tool_service_tools(
+            make_settings(),
+            tenant_id="00000000-0000-0000-0000-000000000001",
+            conversation_id="conversation-1",
+            message_id="wamid-1",
+            journey_stage="Started",
+            journey_version=0,
+            explicit_confirmation_message_id=None,
+        )
 
     assert client is fake_client
     assert tools == ["tool-a", "tool-b"]
@@ -25,7 +33,15 @@ async def test_get_tool_service_tools_connection_failure_returns_empty_list():
     fake_client.start.side_effect = RuntimeError("connection refused")
 
     with patch("app.tools.tool_service.MCPClient", return_value=fake_client):
-        client, tools = await get_tool_service_tools(make_settings())
+        client, tools = await get_tool_service_tools(
+            make_settings(),
+            tenant_id="00000000-0000-0000-0000-000000000001",
+            conversation_id="conversation-1",
+            message_id="wamid-1",
+            journey_stage="Started",
+            journey_version=0,
+            explicit_confirmation_message_id=None,
+        )
 
     assert client is None
     assert tools == []

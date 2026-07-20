@@ -4,7 +4,7 @@ from httpx import Response
 from app.config import Settings
 from app.context.history import fetch_recent_history
 
-TENANT_ID = "tenant-1"
+TENANT_ID = "00000000-0000-0000-0000-000000000001"
 
 
 def make_settings(retry_attempts: int = 1) -> Settings:
