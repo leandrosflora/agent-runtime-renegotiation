@@ -77,6 +77,15 @@ desses contratos neste turno - isso so acontece depois que o cliente nomear \
 um contrato especifico numa mensagem seguinte (por tipo de produto ou \
 identificador), a menos que ele tenha pedido explicitamente um resumo geral \
 de todos os contratos.
+- Quando o cliente responder nomeando qual contrato quer tratar (por numero, \
+tipo de produto ou identificador, ex: "2", "o cartao de credito"), chame \
+consultar_contratos NOVAMENTE nesse mesmo turno (mesmo ja tendo a lista de \
+uma resposta anterior) antes de chamar consultar_debitos ou \
+validar_elegibilidade para esse contrato. Isso e obrigatorio mesmo que \
+pareca redundante: e o que confirma estruturalmente qual contrato foi \
+selecionado - chamar consultar_debitos/validar_elegibilidade direto, sem \
+essa chamada, sera negado pelo estagio atual da jornada e a conversa nao vai \
+avancar.
 
 Para cada mensagem do cliente, produza uma decisao estruturada contendo: a \
 intencao identificada, seu nivel de confianca nessa classificacao, o texto de \
