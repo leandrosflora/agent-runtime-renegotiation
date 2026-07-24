@@ -117,11 +117,7 @@ async def metrics():
     return metrics_response()
 
 
-@app.post(
-    "/process",
-    response_model=ProcessResponse,
-    response_model_exclude_none=True,
-)
+@app.post("/process", response_model=ProcessResponse)
 async def process(payload: ProcessRequest, request: Request) -> ProcessResponse:
     runtime_settings = request.app.state.settings
     header_tenant = current_tenant_id()
