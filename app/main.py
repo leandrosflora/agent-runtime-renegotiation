@@ -153,14 +153,21 @@ async def process(payload: ProcessRequest, request: Request) -> ProcessResponse:
                     make_knowledge_base_tool(runtime_settings, payload.tenant_id),
                 ]
                 agent = build_agent(runtime_settings, tools=tools)
-                decision = await invoke_agent(
-                    agent,
-                    text=payload.text,
-                    journey_stage=payload.journey_stage,
-                    last_intent=payload.last_intent,
-                    settings=runtime_settings,
-                    history=history,
-                )
+                invoke_kwargs = {
+                    "text": payload.text,
+                    "journey_stage": payload.journey_stage,
+                    "last_intent": payload.last_intent,
+                    "settings": runtime_settings,
+                    "history": history,
+                }
+                if payload.active_contract_id is not None:
+                    invoke_kwargs["active_contract_id"] = payload.active_contract_id
+                if payload.active_simulation_id is not None:
+                    invoke_kwargs["active_simulation_id"] = payload.active_simulation_id
+                if payload.active_agreement_id is not None:
+                    invoke_kwargs["active_agreement_id"] = payload.active_agreement_id
+
+                decision = await invoke_agent(agent, **invoke_kwargs)
             finally:
                 await close_tool_service_client(mcp_client)
 
@@ -194,6 +201,7 @@ async def process(payload: ProcessRequest, request: Request) -> ProcessResponse:
 def _normalize_handoff_reason(reason: str | None) -> str:
     known = {
         "agent_runtime_unavailable",
+        "agent_runtime_timeout",
         "low_confidence",
         "customer_requested",
         "policy_denied",

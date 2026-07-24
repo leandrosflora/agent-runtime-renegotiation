@@ -34,8 +34,19 @@ async def invoke_agent(
     last_intent: str | None,
     settings: Settings,
     history: list[dict] | None = None,
+    active_contract_id: str | None = None,
+    active_simulation_id: str | None = None,
+    active_agreement_id: str | None = None,
 ) -> AgentDecision:
-    prompt = _build_prompt(text, journey_stage, last_intent, history)
+    prompt = _build_prompt(
+        text,
+        journey_stage,
+        last_intent,
+        history,
+        active_contract_id,
+        active_simulation_id,
+        active_agreement_id,
+    )
 
     try:
         result = await asyncio.wait_for(
@@ -54,10 +65,28 @@ async def invoke_agent(
             requires_handoff=True,
             handoff_reason=AGENT_RUNTIME_TIMEOUT_REASON,
             reply_text="Nao foi possivel concluir esta etapa com seguranca. Vou transferir o atendimento para um especialista.",
+            active_contract_id=active_contract_id,
+            active_simulation_id=active_simulation_id,
+            active_agreement_id=active_agreement_id,
         )
     except Exception:
         logger.warning("Failed to obtain a decision from the Agent Runtime's model", exc_info=True)
-        return AgentDecision(requires_handoff=True, handoff_reason=AGENT_RUNTIME_UNAVAILABLE_REASON)
+        return AgentDecision(
+            requires_handoff=True,
+            handoff_reason=AGENT_RUNTIME_UNAVAILABLE_REASON,
+            active_contract_id=active_contract_id,
+            active_simulation_id=active_simulation_id,
+            active_agreement_id=active_agreement_id,
+        )
+
+    # Preserve previously persisted state unless the model explicitly returns a replacement.
+    decision = decision.model_copy(
+        update={
+            "active_contract_id": decision.active_contract_id or active_contract_id,
+            "active_simulation_id": decision.active_simulation_id or active_simulation_id,
+            "active_agreement_id": decision.active_agreement_id or active_agreement_id,
+        }
+    )
 
     if decision.confidence < settings.confidence_threshold:
         decision = decision.model_copy(
@@ -75,12 +104,24 @@ def _build_prompt(
     journey_stage: str | None,
     last_intent: str | None,
     history: list[dict] | None = None,
+    active_contract_id: str | None = None,
+    active_simulation_id: str | None = None,
+    active_agreement_id: str | None = None,
 ) -> str:
     context_lines: list[str] = []
     if journey_stage:
         context_lines.append(f"Estagio atual da jornada: {journey_stage}")
     if last_intent:
         context_lines.append(f"Ultima intencao identificada: {last_intent}")
+
+    # Keep the legacy prompt unchanged when no structured state exists.
+    if active_contract_id or active_simulation_id or active_agreement_id:
+        state_lines = [
+            f"active_contract_id={active_contract_id or 'null'}",
+            f"active_simulation_id={active_simulation_id or 'null'}",
+            f"active_agreement_id={active_agreement_id or 'null'}",
+        ]
+        context_lines.append("Estado estruturado da renegociacao:\n" + "\n".join(state_lines))
 
     if history:
         history_lines = "\n".join(

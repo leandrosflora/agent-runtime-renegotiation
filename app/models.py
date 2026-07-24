@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
 
 class ProcessRequest(BaseModel):
@@ -14,6 +14,9 @@ class ProcessRequest(BaseModel):
     journey_stage: str | None = Field(default=None, alias="JourneyStage")
     journey_version: int = Field(default=0, ge=0, alias="JourneyVersion")
     last_intent: str | None = Field(default=None, alias="LastIntent")
+    active_contract_id: str | None = Field(default=None, alias="ActiveContractId")
+    active_simulation_id: str | None = Field(default=None, alias="ActiveSimulationId")
+    active_agreement_id: str | None = Field(default=None, alias="ActiveAgreementId")
     explicit_confirmation_message_id: str | None = Field(
         default=None,
         alias="ExplicitConfirmationMessageId",
@@ -26,6 +29,9 @@ class AgentDecision(BaseModel):
     reply_text: str | None = None
     requires_handoff: bool = False
     handoff_reason: str | None = None
+    active_contract_id: str | None = None
+    active_simulation_id: str | None = None
+    active_agreement_id: str | None = None
 
 
 class ProcessResponse(BaseModel):
@@ -36,6 +42,22 @@ class ProcessResponse(BaseModel):
     reply_text: str | None = Field(default=None, alias="ReplyText")
     requires_handoff: bool = Field(default=False, alias="RequiresHandoff")
     handoff_reason: str | None = Field(default=None, alias="HandoffReason")
+    active_contract_id: str | None = Field(default=None, alias="ActiveContractId")
+    active_simulation_id: str | None = Field(default=None, alias="ActiveSimulationId")
+    active_agreement_id: str | None = Field(default=None, alias="ActiveAgreementId")
+
+    @model_serializer(mode="wrap")
+    def serialize_compatibly(self, handler):
+        data = handler(self)
+        for alias, field_name in (
+            ("ActiveContractId", "active_contract_id"),
+            ("ActiveSimulationId", "active_simulation_id"),
+            ("ActiveAgreementId", "active_agreement_id"),
+        ):
+            if data.get(alias, data.get(field_name)) is None:
+                data.pop(alias, None)
+                data.pop(field_name, None)
+        return data
 
     @classmethod
     def from_decision(cls, decision: AgentDecision) -> ProcessResponse:
