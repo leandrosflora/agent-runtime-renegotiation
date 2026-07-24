@@ -79,6 +79,15 @@ async def invoke_agent(
             active_agreement_id=active_agreement_id,
         )
 
+    # Preserve previously persisted state unless the model explicitly returns a replacement.
+    decision = decision.model_copy(
+        update={
+            "active_contract_id": decision.active_contract_id or active_contract_id,
+            "active_simulation_id": decision.active_simulation_id or active_simulation_id,
+            "active_agreement_id": decision.active_agreement_id or active_agreement_id,
+        }
+    )
+
     if decision.confidence < settings.confidence_threshold:
         decision = decision.model_copy(
             update={
@@ -105,12 +114,14 @@ def _build_prompt(
     if last_intent:
         context_lines.append(f"Ultima intencao identificada: {last_intent}")
 
-    state_lines = [
-        f"active_contract_id={active_contract_id or 'null'}",
-        f"active_simulation_id={active_simulation_id or 'null'}",
-        f"active_agreement_id={active_agreement_id or 'null'}",
-    ]
-    context_lines.append("Estado estruturado da renegociacao:\n" + "\n".join(state_lines))
+    # Keep the legacy prompt unchanged when no structured state exists.
+    if active_contract_id or active_simulation_id or active_agreement_id:
+        state_lines = [
+            f"active_contract_id={active_contract_id or 'null'}",
+            f"active_simulation_id={active_simulation_id or 'null'}",
+            f"active_agreement_id={active_agreement_id or 'null'}",
+        ]
+        context_lines.append("Estado estruturado da renegociacao:\n" + "\n".join(state_lines))
 
     if history:
         history_lines = "\n".join(
@@ -121,4 +132,4 @@ def _build_prompt(
 
     context = "\n".join(context_lines)
     message = f"Mensagem do cliente: {text or ''}"
-    return f"{context}\n\n{message}"
+    return f"{context}\n\n{message}" if context else message
