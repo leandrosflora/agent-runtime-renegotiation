@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_model_id: str = "gpt-4o-mini"
     openai_max_tokens: int = 600
+    agent_timeout_seconds: int = 45
     mock_agent_enabled: bool = False
 
     tool_service_mcp_url: str = "http://localhost:8400/mcp"
