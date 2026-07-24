@@ -21,4 +21,18 @@ jobs:
         run: pip install --quiet --disable-pip-version-check -r requirements.txt -r requirements-dev.txt
 
       - name: Test
-        run: python -m pytest -q --maxfail=1
+        run: |
+          set +e
+          python -m pytest -q --maxfail=1 > pytest.log 2>&1
+          status=$?
+          cat pytest.log
+          echo "$status" > pytest.exit
+          exit "$status"
+
+      - name: Upload pytest log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-log
+          path: pytest.log
+          if-no-files-found: error
