@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -13,6 +14,7 @@ from app.models import AgentDecision
 logger = logging.getLogger(__name__)
 
 AGENT_RUNTIME_UNAVAILABLE_REASON = "agent_runtime_unavailable"
+AGENT_RUNTIME_TIMEOUT_REASON = "agent_runtime_timeout"
 LOW_CONFIDENCE_REASON = "low_confidence"
 
 
@@ -36,10 +38,23 @@ async def invoke_agent(
     prompt = _build_prompt(text, journey_stage, last_intent, history)
 
     try:
-        result = await agent.invoke_async(prompt, structured_output_model=AgentDecision)
+        result = await asyncio.wait_for(
+            agent.invoke_async(prompt, structured_output_model=AgentDecision),
+            timeout=max(1, settings.agent_timeout_seconds),
+        )
         decision = result.structured_output
         if decision is None:
             raise ValueError("Agent did not produce a structured decision")
+    except TimeoutError:
+        logger.error(
+            "Agent execution exceeded the hard timeout of %s seconds",
+            settings.agent_timeout_seconds,
+        )
+        return AgentDecision(
+            requires_handoff=True,
+            handoff_reason=AGENT_RUNTIME_TIMEOUT_REASON,
+            reply_text="Nao foi possivel concluir esta etapa com seguranca. Vou transferir o atendimento para um especialista.",
+        )
     except Exception:
         logger.warning("Failed to obtain a decision from the Agent Runtime's model", exc_info=True)
         return AgentDecision(requires_handoff=True, handoff_reason=AGENT_RUNTIME_UNAVAILABLE_REASON)
