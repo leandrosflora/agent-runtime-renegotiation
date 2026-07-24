@@ -160,6 +160,9 @@ async def process(payload: ProcessRequest, request: Request) -> ProcessResponse:
                     last_intent=payload.last_intent,
                     settings=runtime_settings,
                     history=history,
+                    active_contract_id=payload.active_contract_id,
+                    active_simulation_id=payload.active_simulation_id,
+                    active_agreement_id=payload.active_agreement_id,
                 )
             finally:
                 await close_tool_service_client(mcp_client)
@@ -194,6 +197,7 @@ async def process(payload: ProcessRequest, request: Request) -> ProcessResponse:
 def _normalize_handoff_reason(reason: str | None) -> str:
     known = {
         "agent_runtime_unavailable",
+        "agent_runtime_timeout",
         "low_confidence",
         "customer_requested",
         "policy_denied",
