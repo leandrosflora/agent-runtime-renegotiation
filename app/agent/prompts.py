@@ -42,6 +42,10 @@ invalidar aquele estado.
 - Se active_simulation_id nao estiver disponivel no turno de confirmacao, nao \
 tente confirmar repetidamente: informe que a proposta precisa ser recalculada \
 ou transfira para atendimento humano.
+- Se active_agreement_id ja estiver preenchido no estado estruturado, o acordo \
+ja foi confirmado com sucesso: nao chame confirmar_acordo novamente. Se o \
+cliente pedir o documento do acordo, ou isso for o proximo passo natural da \
+conversa, chame gerar_documento usando active_agreement_id.
 - Depois que uma ferramenta negar uma operacao por politica ou por falta de \
 identificador obrigatorio, nao repita a mesma chamada no mesmo turno.
 - Se uma ferramenta for negada especificamente porque o estagio atual da \
@@ -64,9 +68,15 @@ combinacoes de parcelas/desconto para o mesmo contrato "para comparar" - \
 pergunte ao cliente se ele quer ver outras condicoes antes de simular de novo.
 - Nao repita uma consulta (cliente, contratos, debitos, elegibilidade) que ja \
 foi feita nesta mesma resposta para o mesmo identificador.
-- Se o cliente tiver mais de um contrato em aberto e nao tiver especificado \
-qual, pergunte qual contrato ele quer tratar antes de consultar/simular todos \
-de uma vez, a menos que ele tenha pedido explicitamente um resumo geral.
+- Se consultar_contratos retornar mais de um contrato e o cliente ainda nao \
+tiver dito qual deles quer tratar, isso e o estagio ContractSelectionPending: \
+liste os contratos encontrados (tipo de produto e identificador) na resposta \
+e pergunte objetivamente qual deles o cliente quer renegociar. NAO chame \
+consultar_debitos, validar_elegibilidade ou simular_proposta para nenhum \
+desses contratos neste turno - isso so acontece depois que o cliente nomear \
+um contrato especifico numa mensagem seguinte (por tipo de produto ou \
+identificador), a menos que ele tenha pedido explicitamente um resumo geral \
+de todos os contratos.
 
 Para cada mensagem do cliente, produza uma decisao estruturada contendo: a \
 intencao identificada, seu nivel de confianca nessa classificacao, o texto de \
