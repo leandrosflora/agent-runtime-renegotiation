@@ -24,6 +24,16 @@ LOW_CONFIDENCE_REASON = "low_confidence"
 # error (missing identifier, downstream unavailable, etc.).
 _STAGE_DENIAL_MARKER = "journey stage"
 
+# reply_text the model wrote assumed it would hand off (e.g. "vou transferir voce..."), so
+# clearing requires_handoff alone leaves a reply that's now flatly false - confirmed live, a real
+# customer read "aguarde enquanto realizo a transferencia" on every turn even after the override
+# started firing. Replace it with an honest, deterministic message instead of trying to salvage
+# the model's handoff-flavored prose.
+_STAGE_DENIAL_OVERRIDE_REPLY = (
+    "Já confirmei parte do seu cadastro. Para continuar com a renegociação, pode me confirmar "
+    "que deseja seguir? Assim eu prossigo com os próximos passos."
+)
+
 # The governed MCP tools tool-service-renegotiation's policy actually gates by journey stage -
 # see policy.py. Excludes search_knowledge_base (ungoverned) and the internal "AgentDecision"
 # tool call Strands uses to extract structured_output, neither of which should count towards
@@ -97,7 +107,13 @@ def _override_handoff_for_stage_denial(
         not outcome["success"] and not outcome["stage_denied"] for outcome in tool_outcomes
     )
     if any_success and any_stage_denied and not any_other_failure:
-        return decision.model_copy(update={"requires_handoff": False, "handoff_reason": None})
+        return decision.model_copy(
+            update={
+                "requires_handoff": False,
+                "handoff_reason": None,
+                "reply_text": _STAGE_DENIAL_OVERRIDE_REPLY,
+            }
+        )
 
     return decision
 

@@ -5,6 +5,7 @@ import pytest
 from app.agent.core import (
     AGENT_RUNTIME_UNAVAILABLE_REASON,
     LOW_CONFIDENCE_REASON,
+    _STAGE_DENIAL_OVERRIDE_REPLY,
     _override_handoff_for_stage_denial,
     invoke_agent,
 )
@@ -160,7 +161,11 @@ def test_override_handoff_for_stage_denial_clears_handoff_on_partial_progress():
 
     assert result.requires_handoff is False
     assert result.handoff_reason is None
-    assert result.reply_text == decision.reply_text
+    # The model's original reply_text assumed a handoff was happening (e.g. "vou transferir
+    # voce...") - leaving it as-is would tell the customer something false. Replaced with an
+    # honest, deterministic message instead of trying to salvage the model's prose.
+    assert result.reply_text == _STAGE_DENIAL_OVERRIDE_REPLY
+    assert "transfer" not in result.reply_text.lower()
 
 
 def test_override_handoff_for_stage_denial_keeps_handoff_when_nothing_succeeded():
