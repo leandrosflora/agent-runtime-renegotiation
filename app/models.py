@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
 
 class ProcessRequest(BaseModel):
@@ -45,6 +45,19 @@ class ProcessResponse(BaseModel):
     active_contract_id: str | None = Field(default=None, alias="ActiveContractId")
     active_simulation_id: str | None = Field(default=None, alias="ActiveSimulationId")
     active_agreement_id: str | None = Field(default=None, alias="ActiveAgreementId")
+
+    @model_serializer(mode="wrap")
+    def serialize_compatibly(self, handler):
+        data = handler(self)
+        for alias, field_name in (
+            ("ActiveContractId", "active_contract_id"),
+            ("ActiveSimulationId", "active_simulation_id"),
+            ("ActiveAgreementId", "active_agreement_id"),
+        ):
+            if data.get(alias, data.get(field_name)) is None:
+                data.pop(alias, None)
+                data.pop(field_name, None)
+        return data
 
     @classmethod
     def from_decision(cls, decision: AgentDecision) -> ProcessResponse:
