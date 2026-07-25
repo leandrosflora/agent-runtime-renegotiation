@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
+import unicodedata
 from typing import Any
 
 from strands import Agent
-from strands.hooks import AfterToolCallEvent
+from strands.hooks import AfterToolCallEvent, BeforeToolCallEvent
 from strands.models import OpenAIModel
 
 from app.agent.prompts import SYSTEM_PROMPT
@@ -33,6 +35,22 @@ _STAGE_DENIAL_MARKER = "journey stage"
 _STAGE_DENIAL_OVERRIDE_REPLY = (
     "Já confirmei parte do seu cadastro. Para continuar com a renegociação, pode me confirmar "
     "que deseja seguir? Assim eu prossigo com os próximos passos."
+)
+
+# Used instead of _STAGE_DENIAL_OVERRIDE_REPLY specifically when this turn's denial happened
+# because the customer just accepted a proposal (see invoke_agent's proposal_just_accepted).
+# Confirmed live: the generic reply above reads as a non-sequitur here - the model's own previous
+# turn already asked "Gostaria de seguir com essa proposta?", the customer answered "sim", and the
+# generic reply then asks what looks like the exact same question again ("pode me confirmar que
+# deseja seguir?"), so the customer reasonably concludes the system didn't register their answer
+# and the conversation is stuck. It also never gives the customer a phrase is_explicit_confirmation_text
+# will recognize, so even a customer who answers again in good faith (e.g. "sim" again) stays stuck.
+# This reply instead makes the state change explicit (proposal accepted) and asks for the specific
+# word ("confirmo") the next turn's gate is looking for.
+_PROPOSAL_ACCEPTED_OVERRIDE_REPLY = (
+    "Certo, entendi que você quer seguir com essa proposta! Para formalizar o acordo com essas "
+    "condições, preciso da sua confirmação final: responda \"confirmo\" para eu seguir com a "
+    "formalização."
 )
 
 # The governed MCP tools tool-service-renegotiation's policy actually gates by journey stage -
@@ -94,8 +112,150 @@ def _track_tool_outcomes(agent: Agent) -> list[dict[str, Any]]:
     return outcomes
 
 
+# Matches an 11-digit CPF written as a bare digit run or with the conventional dot/dash
+# punctuation (e.g. "123.456.789-00") - deliberately not a full CPF check-digit validator (that's
+# core-bancario-mock's job downstream), just a shape loose enough to find one if the customer
+# typed it.
+_CPF_CANDIDATE_PATTERN = re.compile(r"\d{3}\.?\d{3}\.?\d{3}-?\d{2}")
+
+
+def _extract_cpf_candidates(text: str | None, history: list[dict] | None = None) -> frozenset[str]:
+    """Every CPF-shaped value the customer has actually typed, in this turn or earlier in the
+    conversation - the only values consultar_cliente is allowed to be called with (see
+    _register_identification_guard). Only looks at 'user' role messages: an assistant message
+    that happens to echo a CPF back doesn't count as the customer providing one."""
+    texts = [text or ""]
+    if history:
+        texts.extend(
+            message.get("content", {}).get("text", "")
+            for message in history
+            if isinstance(message, dict) and message.get("role") == "user"
+        )
+    candidates: set[str] = set()
+    for candidate_text in texts:
+        for match in _CPF_CANDIDATE_PATTERN.finditer(candidate_text or ""):
+            digits = re.sub(r"\D", "", match.group())
+            if len(digits) == 11:
+                candidates.add(digits)
+    return frozenset(candidates)
+
+
+def _cpf_was_provided_by_customer(cpf: str | None, cpf_candidates: frozenset[str]) -> bool:
+    return re.sub(r"\D", "", cpf or "") in cpf_candidates
+
+
+# client_id is the same CPF in this system - consultar_contratos calls "/clients/{clientId}/contracts"
+# with it directly (see tool-service-renegotiation/app/renegotiation_client.py) - so it must pass
+# the same check as consultar_cliente's cpf argument.
+_CPF_SCOPED_ARG_TOOLS: dict[str, str] = {
+    "consultar_cliente": "cpf",
+    "consultar_contratos": "client_id",
+}
+
+
+# consultar_cliente identifies which customer every subsequent tool call in the turn (and the
+# conversation) operates on. Confirmed live: faced with a customer who never gave a CPF at all
+# (just "renegociar"), the model called it anyway - first with the literal string "undefined",
+# then, after that failed, with a fabricated-but-validly-shaped CPF - and core-bancario-mock's
+# generic fallback (see IsValidCpfFormat) happily returned plausible-looking fake customer/
+# contract/debt data for it, since that fallback exists precisely to answer any well-formed CPF
+# that isn't a reserved fixture. Nothing downstream would ever catch this; the agent went on to
+# confidently present a stranger's fabricated financial data as the customer's own. Identity
+# fabrication is too severe a failure mode to leave to prompt instructions alone (already tried,
+# and still not reliable elsewhere in this file - see _override_handoff_for_stage_denial's own
+# history), so this blocks it deterministically at the tool-call boundary instead.
+#
+# Also covers consultar_contratos's client_id, not just consultar_cliente's cpf - confirmed live
+# in a multi-contract conversation: on the turn re-confirming which contract the customer picked,
+# the model called consultar_contratos with "2222" (the trailing digits of the client's display
+# name, "Cliente Homologacao 2222") instead of the real CPF "22222222222" it had already resolved
+# earlier in the same conversation. That truncated id doesn't match any real client, so
+# core-bancario-mock 404s, which renegotiation-service (correctly) turns into a 200 response with
+# an empty contracts list - which _contracts_milestone then misread as "the customer's one and
+# only contract, already selected" (see the contract_count fix below), corrupting the journey
+# state with no real contract_id behind it.
+def _register_identification_guard(agent: Agent, cpf_candidates: frozenset[str]) -> None:
+    def _on_before_tool_call(event: BeforeToolCallEvent) -> None:
+        if not isinstance(event.tool_use, dict):
+            return
+        arg_name = _CPF_SCOPED_ARG_TOOLS.get(event.tool_use.get("name"))
+        if arg_name is None:
+            return
+        tool_input = event.tool_use.get("input")
+        cpf = tool_input.get(arg_name) if isinstance(tool_input, dict) else None
+        if not _cpf_was_provided_by_customer(cpf, cpf_candidates):
+            event.cancel_tool = (
+                "Esse CPF/client_id nao corresponde a nenhum CPF que o cliente informou nesta "
+                "conversa. Use o CPF real que o cliente forneceu - nunca um trecho do nome de "
+                "exibicao ou outro valor."
+            )
+
+    agent.add_hook(_on_before_tool_call, BeforeToolCallEvent)
+
+
+# contract_id argument name per tool - see tool-service-renegotiation's app/mcp_server.py.
+# confirmar_acordo/gerar_documento take simulation_id/agreement_id instead, not a raw contract_id,
+# so they're intentionally excluded here.
+_CONTRACT_SCOPED_ARG_TOOLS: dict[str, str] = {
+    "consultar_debitos": "contract_id",
+    "validar_elegibilidade": "contract_id",
+    "simular_proposta": "contract_id",
+}
+
+
+# consultar_debitos/validar_elegibilidade/simular_proposta all take a contract_id the model is
+# supposed to resolve from a real consultar_contratos result (or the contract already selected in
+# an earlier turn, carried in active_contract_id) - never from the customer's raw selection text.
+# Confirmed live: given a customer reply of just "1" (picking the first contract from a numbered
+# list), the model called validar_elegibilidade with the literal string "1" as contract_id -
+# despite having just fetched the real identifiers via consultar_contratos in the very same turn -
+# and renegotiation-service returned a confusing 502 for the nonsense id (see also the
+# EligibilityApiClient fix that stopped that specific case from masquerading as an upstream
+# outage). Mirrors _register_identification_guard's shape: known_contract_ids seeds from the
+# persisted active_contract_id, then grows as consultar_contratos results arrive during this turn.
+def _register_contract_guard(agent: Agent, active_contract_id: str | None) -> None:
+    known_contract_ids: set[str] = {active_contract_id} if active_contract_id else set()
+
+    def _on_after_tool_call(event: AfterToolCallEvent) -> None:
+        if not isinstance(event.tool_use, dict) or event.tool_use.get("name") != "consultar_contratos":
+            return
+        result = event.result
+        text = (
+            "".join(
+                item.get("text", "")
+                for item in (result.get("content") or [])
+                if isinstance(item, dict)
+            )
+            if isinstance(result, dict)
+            else ""
+        )
+        known_contract_ids.update(_contract_ids(text))
+
+    def _on_before_tool_call(event: BeforeToolCallEvent) -> None:
+        if not isinstance(event.tool_use, dict):
+            return
+        arg_name = _CONTRACT_SCOPED_ARG_TOOLS.get(event.tool_use.get("name"))
+        if arg_name is None:
+            return
+        tool_input = event.tool_use.get("input")
+        contract_id = tool_input.get(arg_name) if isinstance(tool_input, dict) else None
+        if contract_id not in known_contract_ids:
+            event.cancel_tool = (
+                "Esse contract_id nao corresponde a nenhum contrato real do cliente nesta "
+                "conversa. Chame consultar_contratos novamente e use um dos identificadores "
+                "retornados - nunca o numero ou texto literal que o cliente digitou."
+            )
+
+    agent.add_hook(_on_after_tool_call, AfterToolCallEvent)
+    agent.add_hook(_on_before_tool_call, BeforeToolCallEvent)
+
+
+def _any_non_stage_denial_failure(tool_outcomes: list[dict[str, Any]]) -> bool:
+    return any(not outcome["success"] and not outcome["stage_denied"] for outcome in tool_outcomes)
+
+
 def _override_handoff_for_stage_denial(
-    decision: AgentDecision, tool_outcomes: list[dict[str, bool]]
+    decision: AgentDecision, tool_outcomes: list[dict[str, bool]], proposal_just_accepted: bool = False
 ) -> AgentDecision:
     """A tool denied only because the journey hasn't reached the required stage yet is expected
     mid-sequence, not a failure - see agent-runtime-renegotiation's app/agent/prompts.py and the
@@ -107,14 +267,39 @@ def _override_handoff_for_stage_denial(
     ("Aceito essa proposta") advances the stage only after this turn completes
     (ProposalSelectionDetector, conversation-orchestrator-side), so the agent's premature
     confirmar_acordo attempt is denied with zero governed tool successes this turn, yet it is
-    still not a dead end - the very next turn will have the advanced stage and succeed."""
+    still not a dead end - the very next turn will have the advanced stage and succeed.
+
+    The proposal_just_accepted branch is checked independently of decision.requires_handoff -
+    confirmed live the model doesn't reliably set requires_handoff=true on this turn (it often
+    writes its own confusing reply_text - "houve um erro... revisar a proposta ou simular novas
+    condicoes?" - while leaving requires_handoff=false). This is safe to apply unconditionally
+    because proposal_just_accepted, by construction (see invoke_agent), only fires when
+    _compute_journey_milestone found no real tool success this turn - there's never a genuine
+    success reply at risk of being overwritten.
+
+    The general branch below, unlike that one, IS still gated on decision.requires_handoff. A
+    stage denial can legitimately share a turn with a real success (e.g. confirmar_acordo
+    succeeding, then a same-turn gerar_documento attempt being denied only because
+    AgreementConfirmed isn't signed until next turn) - confirmed live the model's own reply in
+    that case ("acordo formalizado com sucesso... mas nao consegui gerar o documento agora") is
+    accurate and requires_handoff is correctly left false, so unconditionally replacing it here
+    would destroy a good message to fix a problem that didn't exist on that turn. Gating on
+    requires_handoff keeps this to the case this override was built for: the model believed it was
+    handing off and wrote reply_text assuming that (see _STAGE_DENIAL_OVERRIDE_REPLY's docstring)."""
+    if proposal_just_accepted and not _any_non_stage_denial_failure(tool_outcomes):
+        return decision.model_copy(
+            update={
+                "requires_handoff": False,
+                "handoff_reason": None,
+                "reply_text": _PROPOSAL_ACCEPTED_OVERRIDE_REPLY,
+            }
+        )
+
     if not decision.requires_handoff or not tool_outcomes:
         return decision
 
     any_stage_denied = any(outcome["stage_denied"] for outcome in tool_outcomes)
-    any_other_failure = any(
-        not outcome["success"] and not outcome["stage_denied"] for outcome in tool_outcomes
-    )
+    any_other_failure = _any_non_stage_denial_failure(tool_outcomes)
     if any_stage_denied and not any_other_failure:
         return decision.model_copy(
             update={
@@ -199,8 +384,9 @@ def _contracts_milestone(
     incoming_journey_stage: str | None,
     resolved_active_contract_id: str | None,
 ) -> str:
-    """A single contract is unambiguous - always ContractSelected. More than one requires the
-    customer to pick, confirmed one of two ways:
+    """Exactly one contract is unambiguous - always ContractSelected. Zero or more than one
+    requires the customer to pick (or, for zero, isn't a real selection at all), confirmed one of
+    two ways:
 
     1. A contract-scoped call (consultar_debitos/validar_elegibilidade/simular_proposta)
        succeeded this turn with a contract_id - kept as a defensive/forward-compatible check, but
@@ -213,9 +399,12 @@ def _contracts_milestone(
        resolved which, and that resolution is what this milestone confirms.
 
     Otherwise ContractSelectionPending, so the agent pauses and asks instead of silently
-    guessing which contract to proceed with."""
+    guessing which contract to proceed with. Deliberately contract_count == 1, not <= 1 - confirmed
+    live that a truncated/invalid client_id can make consultar_contratos legitimately succeed with
+    an empty list (0 contracts), which used to read as "the one obvious contract, already
+    selected" here and silently advanced the journey with no real contract_id behind it."""
     contract_count = _count_contracts(contracts_outcome.get("result_text"))
-    if contract_count is not None and contract_count <= 1:
+    if contract_count == 1:
         return "ContractSelected"
 
     for outcome in tool_outcomes:
@@ -255,6 +444,74 @@ def _parse_contracts(result_text: str | None) -> list[Any] | None:
     return contracts if isinstance(contracts, list) else None
 
 
+# Moved here from conversation-orchestrator's ExplicitConfirmationDetector/ProposalSelectionDetector
+# (generalize-orchestrator-for-multi-agent): once the orchestrator became skill-agnostic it could
+# no longer host renegotiation-specific Portuguese regex, and this judgment always belonged to
+# whichever agent understands the domain, the same way JourneyMilestone's tool-outcome evidence
+# does - it just happens to read the customer's raw text instead of a tool result.
+def _remove_diacritics(value: str) -> str:
+    normalized = unicodedata.normalize("NFD", value)
+    stripped = "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
+    return unicodedata.normalize("NFC", stripped)
+
+
+_NEGATION_PATTERN = re.compile(r"\b(nao|nunca|cancel|desist)\b")
+# Includes the bare infinitive ("aceitar"/"confirmar") alongside the conjugated forms - confirmed
+# live a real customer's "vou aceitar essa" matched neither "aceito" nor "aceita" and got stuck
+# repeating the stage-denial override reply forever. Deliberately still a curated phrase list, not
+# a stem wildcard (e.g. "confirm\w*") - confirmar_acordo is gated by this, and a stem match would
+# also fire on a customer just asking "posso confirmar antes?", not actually confirming yet.
+_EXPLICIT_CONFIRMATION_PATTERN = re.compile(
+    r"\b(confirmo|confirmar|aceito|aceitar|pode confirmar|pode fechar|fechar acordo|quero fechar|sim confirmo|sim aceito)\b"
+)
+
+
+def _matches_customer_text(text: str | None, pattern: re.Pattern[str]) -> bool:
+    if not text:
+        return False
+    normalized = _remove_diacritics(text).lower()
+    if _NEGATION_PATTERN.search(normalized):
+        return False
+    return bool(pattern.search(normalized))
+
+
+def is_explicit_confirmation_text(text: str | None, state: str | None) -> bool:
+    """Mirrors ExplicitConfirmationDetector: only meaningful once a proposal has been selected
+    and the customer is confirming *this* turn - used to unlock confirmar_acordo's gate on
+    tool-service-renegotiation (see app/tools/tool_service.py's confirmation_message_id claim),
+    which must be decided before the agent (and its tools) are even constructed. Still a curated
+    keyword pattern, not a model-judged field like _customer_selected_proposal below - unlike
+    proposal selection, this must be known *before* the agent runs (it gates a signed claim used
+    by that same turn's tool calls), so there's no "ask the model, use its answer" turn order that
+    works without adding a whole extra model round-trip before every turn at this stage."""
+    if state not in ("ProposalSelected", "ConfirmationPending"):
+        return False
+    return _matches_customer_text(text, _EXPLICIT_CONFIRMATION_PATTERN)
+
+
+def _customer_selected_proposal(
+    decision: AgentDecision, state: str | None, tool_outcomes: list[dict[str, Any]]
+) -> bool:
+    """Replaces the old ProposalSelectionDetector-style keyword regex: the model answers this
+    narrow, closed question directly (AgentDecision.customer_accepted_proposal) instead of us
+    pattern-matching its raw text afterwards. Unlike explicit confirmation above, this doesn't
+    gate any tool call - it only feeds the milestone fallback below - so there's no ordering
+    constraint forcing a pre-agent check, and the model's answer can be used as-is.
+
+    Confirmed live this field alone isn't fully reliable: on a turn where the model also attempted
+    confirmar_acordo/simular_proposta (both stage-denied, since ProposalSelected hadn't been
+    reached yet), it did not also set customer_accepted_proposal - leaving the customer stuck. A
+    model attempting confirmar_acordo at all while a proposal is still on the table is itself
+    strong, verifiable behavioral evidence it believed the customer had accepted it (why else try
+    to formalize an agreement?) - used here as a second, independent signal alongside the field,
+    from the same tool-outcome tracking the milestone computation above already relies on."""
+    if state != "ProposalAvailable":
+        return False
+    if decision.customer_accepted_proposal:
+        return True
+    return any(outcome["tool"] == "confirmar_acordo" for outcome in tool_outcomes)
+
+
 async def invoke_agent(
     agent: Agent,
     text: str | None,
@@ -277,6 +534,8 @@ async def invoke_agent(
     )
 
     tool_outcomes = _track_tool_outcomes(agent)
+    _register_identification_guard(agent, _extract_cpf_candidates(text, history))
+    _register_contract_guard(agent, active_contract_id)
 
     try:
         result = await asyncio.wait_for(
@@ -318,15 +577,14 @@ async def invoke_agent(
         }
     )
 
-    decision = _override_handoff_for_stage_denial(decision, tool_outcomes)
+    milestone = _compute_journey_milestone(tool_outcomes, journey_stage, decision.active_contract_id)
+    proposal_just_accepted = False
+    if milestone is None and _customer_selected_proposal(decision, journey_stage, tool_outcomes):
+        milestone = "ProposalSelected"
+        proposal_just_accepted = True
 
-    decision = decision.model_copy(
-        update={
-            "journey_milestone": _compute_journey_milestone(
-                tool_outcomes, journey_stage, decision.active_contract_id
-            )
-        }
-    )
+    decision = _override_handoff_for_stage_denial(decision, tool_outcomes, proposal_just_accepted)
+    decision = decision.model_copy(update={"state": milestone})
 
     if decision.confidence < settings.confidence_threshold:
         decision = decision.model_copy(
