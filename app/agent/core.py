@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import unicodedata
+from datetime import datetime
 from typing import Any
 
 from strands import Agent
@@ -114,9 +115,18 @@ def _track_tool_outcomes(agent: Agent) -> list[dict[str, Any]]:
 
 # Matches an 11-digit CPF written as a bare digit run or with the conventional dot/dash
 # punctuation (e.g. "123.456.789-00") - deliberately not a full CPF check-digit validator (that's
-# core-bancario-mock's job downstream), just a shape loose enough to find one if the customer
-# typed it.
+# core-bancario-mock's job downstream, and this demo's own reserved test CPFs like "11111111111"
+# are all-same-digit values that a real checksum would reject anyway), just a shape loose enough
+# to find one if the customer typed it.
 _CPF_CANDIDATE_PATTERN = re.compile(r"\d{3}\.?\d{3}\.?\d{3}-?\d{2}")
+
+# A Brazilian mobile number is also 11 digits (2-digit DDD + subscriber number), so a bare
+# shape-only check can't tell a CPF from a phone number typed nearby. Rather than guessing from
+# the digits themselves, exclude a match if the customer's own words right before it name it as a
+# phone number - narrow and low-risk: doesn't affect a bare CPF typed with no such context, which
+# is the overwhelmingly common case in this conversation.
+_PHONE_CONTEXT_WINDOW = 20
+_PHONE_CONTEXT_PATTERN = re.compile(r"telefone|celular|whatsapp|\bfone\b|\bcel\b|\btel\b|contato")
 
 
 def _extract_cpf_candidates(text: str | None, history: list[dict] | None = None) -> frozenset[str]:
@@ -133,10 +143,16 @@ def _extract_cpf_candidates(text: str | None, history: list[dict] | None = None)
         )
     candidates: set[str] = set()
     for candidate_text in texts:
-        for match in _CPF_CANDIDATE_PATTERN.finditer(candidate_text or ""):
+        candidate_text = candidate_text or ""
+        for match in _CPF_CANDIDATE_PATTERN.finditer(candidate_text):
             digits = re.sub(r"\D", "", match.group())
-            if len(digits) == 11:
-                candidates.add(digits)
+            if len(digits) != 11:
+                continue
+            window_start = max(0, match.start() - _PHONE_CONTEXT_WINDOW)
+            preceding = _remove_diacritics(candidate_text[window_start : match.start()]).lower()
+            if _PHONE_CONTEXT_PATTERN.search(preceding):
+                continue
+            candidates.add(digits)
     return frozenset(candidates)
 
 
@@ -512,6 +528,58 @@ def _customer_selected_proposal(
     return any(outcome["tool"] == "confirmar_acordo" for outcome in tool_outcomes)
 
 
+# A plain "sim"/"ok"/similar affirmative isn't itself ambiguous - the ambiguity was always about
+# which contract it applies to, not whether it's a yes. Deliberately broad, same spirit as
+# _EXPLICIT_CONFIRMATION_PATTERN's list: not trying to enumerate every possible phrasing, just the
+# common short ones a customer would actually use to answer a yes/no offer.
+_AFFIRMATIVE_PATTERN = re.compile(
+    r"\b(sim|isso|esse mesmo|essa mesma|pode ser|topo|beleza|fechado|bora|ok|blz)\b"
+)
+
+
+def _customer_confirmed_offered_alternative(
+    text: str | None, offered_alternative_contract_id: str | None
+) -> str | None:
+    """Reproduces a real multi-contract bug: the model offered Cartao de Credito as a fallback
+    after simular_proposta failed for Emprestimo Pessoal, the customer replied "sim", and the
+    model kept processing Emprestimo Pessoal anyway - active_contract_id in structured_state never
+    actually switched, because nothing forced it to. offered_alternative_contract_id (set by the
+    model on the turn it makes the offer - see prompts.py) is what lets this be resolved
+    deterministically instead of trusting the model to remember its own pivot: a plain affirmative
+    reply to a pending offer means the customer picked the alternative, full stop."""
+    if not offered_alternative_contract_id:
+        return None
+    if not _matches_customer_text(text, _AFFIRMATIVE_PATTERN):
+        return None
+    return offered_alternative_contract_id
+
+
+# gerar_documento can never succeed on the same turn confirmar_acordo just did - AgreementConfirmed
+# isn't signed into the MCP JWT until the turn after (the same one-turn-behind constraint
+# _override_handoff_for_stage_denial documents). That's not a maybe, it's guaranteed every time, so
+# the customer shouldn't have to explicitly ask again for what should already be theirs. Appends a
+# fixed, deterministic notice instead of leaving it to the model to remember to set that
+# expectation on every single turn this exact pattern occurs.
+_DOCUMENT_PENDING_SUFFIX = (
+    " Seu comprovante ja esta sendo preparado - e so me mandar qualquer mensagem que eu te envio."
+)
+
+
+def _append_document_pending_notice(
+    decision: AgentDecision, tool_outcomes: list[dict[str, Any]], milestone: str | None
+) -> AgentDecision:
+    if milestone != "AgreementConfirmed":
+        return decision
+    gerar_documento_denied = any(
+        outcome["tool"] == "gerar_documento" and not outcome["success"] for outcome in tool_outcomes
+    )
+    if not gerar_documento_denied or not decision.reply_text:
+        return decision
+    if _DOCUMENT_PENDING_SUFFIX.strip() in decision.reply_text:
+        return decision
+    return decision.model_copy(update={"reply_text": decision.reply_text + _DOCUMENT_PENDING_SUFFIX})
+
+
 async def invoke_agent(
     agent: Agent,
     text: str | None,
@@ -522,6 +590,8 @@ async def invoke_agent(
     active_contract_id: str | None = None,
     active_simulation_id: str | None = None,
     active_agreement_id: str | None = None,
+    offered_alternative_contract_id: str | None = None,
+    session_reset: bool = False,
 ) -> AgentDecision:
     prompt = _build_prompt(
         text,
@@ -531,6 +601,7 @@ async def invoke_agent(
         active_contract_id,
         active_simulation_id,
         active_agreement_id,
+        session_reset,
     )
 
     tool_outcomes = _track_tool_outcomes(agent)
@@ -577,6 +648,10 @@ async def invoke_agent(
         }
     )
 
+    resolved_alt_contract = _customer_confirmed_offered_alternative(text, offered_alternative_contract_id)
+    if resolved_alt_contract:
+        decision = decision.model_copy(update={"active_contract_id": resolved_alt_contract})
+
     milestone = _compute_journey_milestone(tool_outcomes, journey_stage, decision.active_contract_id)
     proposal_just_accepted = False
     if milestone is None and _customer_selected_proposal(decision, journey_stage, tool_outcomes):
@@ -585,6 +660,7 @@ async def invoke_agent(
 
     decision = _override_handoff_for_stage_denial(decision, tool_outcomes, proposal_just_accepted)
     decision = decision.model_copy(update={"state": milestone})
+    decision = _append_document_pending_notice(decision, tool_outcomes, milestone)
 
     if decision.confidence < settings.confidence_threshold:
         decision = decision.model_copy(
@@ -597,6 +673,33 @@ async def invoke_agent(
     return decision
 
 
+def _filter_history_since(history: list[dict] | None, cutoff: datetime | None) -> list[dict]:
+    """Drops messages older than cutoff (the current 15-minute session's start) - used every turn,
+    not just the reset turn itself, so a conversation can't fall back on identity/context the
+    customer provided in an expired session on any later turn either. This is the same history
+    list _register_identification_guard reads for CPF candidates, so filtering it here is what
+    actually makes a session reset stick - without this, a CPF given minutes before expiry would
+    still satisfy that guard after the reset. A message with no parseable createdAt is kept rather
+    than dropped, since silently losing real current-session context on a parsing hiccup is worse
+    than occasionally keeping one it didn't need to."""
+    if not history or cutoff is None:
+        return history or []
+    kept: list[dict] = []
+    for message in history:
+        created_at = message.get("createdAt") if isinstance(message, dict) else None
+        if created_at is None:
+            kept.append(message)
+            continue
+        try:
+            message_time = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+        except ValueError:
+            kept.append(message)
+            continue
+        if message_time >= cutoff:
+            kept.append(message)
+    return kept
+
+
 def _build_prompt(
     text: str | None,
     journey_stage: str | None,
@@ -605,8 +708,15 @@ def _build_prompt(
     active_contract_id: str | None = None,
     active_simulation_id: str | None = None,
     active_agreement_id: str | None = None,
+    session_reset: bool = False,
 ) -> str:
     context_lines: list[str] = []
+    if session_reset:
+        context_lines.append(
+            "A sessao anterior deste cliente expirou (mais de 15 minutos) e foi reiniciada agora "
+            "- antes de qualquer outra coisa, informe isso ao cliente de forma breve e clara e "
+            "peca o CPF novamente, mesmo que ele tenha informado antes."
+        )
     if journey_stage:
         context_lines.append(f"Estagio atual da jornada: {journey_stage}")
     if last_intent:

@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -8,12 +9,16 @@ from strands.hooks import AfterToolCallEvent, BeforeToolCallEvent
 from app.agent.core import (
     AGENT_RUNTIME_UNAVAILABLE_REASON,
     LOW_CONFIDENCE_REASON,
+    _DOCUMENT_PENDING_SUFFIX,
     _PROPOSAL_ACCEPTED_OVERRIDE_REPLY,
     _STAGE_DENIAL_OVERRIDE_REPLY,
+    _append_document_pending_notice,
     _compute_journey_milestone,
     _cpf_was_provided_by_customer,
+    _customer_confirmed_offered_alternative,
     _customer_selected_proposal,
     _extract_cpf_candidates,
+    _filter_history_since,
     _override_handoff_for_stage_denial,
     _register_contract_guard,
     _register_identification_guard,
@@ -173,6 +178,82 @@ async def test_invoke_agent_omitted_history_behaves_exactly_as_before():
 
     prompt = agent.invoke_async.call_args.args[0]
     assert prompt == "Mensagem do cliente: Ola"
+
+
+async def test_invoke_agent_session_reset_injects_the_explicit_note_into_the_prompt():
+    decision = AgentDecision(intent="faq", confidence=0.9, reply_text="Oi!", requires_handoff=False)
+    agent = agent_returning(decision)
+
+    await invoke_agent(agent, "Ola", None, None, make_settings(), session_reset=True)
+
+    prompt = agent.invoke_async.call_args.args[0]
+    assert "sessao anterior" in prompt.lower()
+    assert "expirou" in prompt.lower()
+
+
+async def test_invoke_agent_no_session_reset_omits_the_note():
+    decision = AgentDecision(intent="faq", confidence=0.9, reply_text="Oi!", requires_handoff=False)
+    agent = agent_returning(decision)
+
+    await invoke_agent(agent, "Ola", None, None, make_settings(), session_reset=False)
+
+    prompt = agent.invoke_async.call_args.args[0]
+    assert "expirou" not in prompt.lower()
+
+
+# --- _filter_history_since ----------------------------------------------------------------------
+
+
+def test_filter_history_since_drops_messages_before_the_cutoff():
+    cutoff = datetime(2026, 7, 25, 15, 0, 0, tzinfo=timezone.utc)
+    history = [
+        {"role": "user", "content": {"text": "antes do reset"}, "createdAt": "2026-07-25T14:50:00+00:00"},
+        {"role": "user", "content": {"text": "depois do reset"}, "createdAt": "2026-07-25T15:05:00+00:00"},
+    ]
+
+    result = _filter_history_since(history, cutoff)
+
+    assert result == [history[1]]
+
+
+def test_filter_history_since_keeps_everything_when_no_cutoff():
+    history = [{"role": "user", "content": {"text": "oi"}, "createdAt": "2026-07-25T14:50:00+00:00"}]
+
+    assert _filter_history_since(history, None) == history
+
+
+def test_filter_history_since_keeps_messages_with_no_timestamp():
+    cutoff = datetime(2026, 7, 25, 15, 0, 0, tzinfo=timezone.utc)
+    history = [{"role": "user", "content": {"text": "sem timestamp"}}]
+
+    assert _filter_history_since(history, cutoff) == history
+
+
+def test_filter_history_since_empty_history():
+    cutoff = datetime(2026, 7, 25, 15, 0, 0, tzinfo=timezone.utc)
+
+    assert _filter_history_since(None, cutoff) == []
+    assert _filter_history_since([], cutoff) == []
+
+
+async def test_invoke_agent_history_filtered_before_reset_never_reaches_the_cpf_guard():
+    # Reproduces the real risk end-to-end: a CPF given 20 minutes ago (before the session reset)
+    # must not satisfy the identification guard just because it's still in the raw history list -
+    # main.py is expected to have already filtered it out via _filter_history_since before calling
+    # invoke_agent, so this asserts the guard only sees what's actually passed in.
+    decision = AgentDecision(intent="faq", confidence=0.9, reply_text="Oi", requires_handoff=False)
+    agent = agent_returning(decision)
+    stale_history = [{"role": "user", "content": {"text": "meu cpf e 11111111111"}, "createdAt": "2026-07-25T14:00:00+00:00"}]
+
+    cutoff = datetime(2026, 7, 25, 15, 0, 0, tzinfo=timezone.utc)
+    filtered_history = _filter_history_since(stale_history, cutoff)
+    await invoke_agent(agent, "ola", None, None, make_settings(), history=filtered_history, session_reset=True)
+
+    before_cb = [call for call in agent.add_hook.call_args_list if call.args[1] is BeforeToolCallEvent][0].args[0]
+    event = _before_tool_call_event(agent, "11111111111")
+    before_cb(event)
+
+    assert event.cancel_tool
 
 
 # --- _override_handoff_for_stage_denial -------------------------------------------------------
@@ -596,6 +677,110 @@ def test_customer_selected_proposal_false_when_only_unrelated_tools_were_attempt
     assert result is False
 
 
+# --- _customer_confirmed_offered_alternative ---------------------------------------------------
+
+
+def test_customer_confirmed_offered_alternative_resolves_on_plain_affirmative():
+    # Reproduces the real multi-contract bug: model offered Cartao de Credito as a fallback after
+    # Emprestimo Pessoal failed, customer replied "sim" - this must resolve to the offered
+    # contract, not whatever was previously active.
+    result = _customer_confirmed_offered_alternative("sim", "22222222222-contract-2")
+
+    assert result == "22222222222-contract-2"
+
+
+def test_customer_confirmed_offered_alternative_none_when_nothing_was_offered():
+    assert _customer_confirmed_offered_alternative("sim", None) is None
+
+
+def test_customer_confirmed_offered_alternative_none_when_reply_is_not_affirmative():
+    assert _customer_confirmed_offered_alternative("quanto fica em 6x?", "22222222222-contract-2") is None
+
+
+def test_customer_confirmed_offered_alternative_none_on_negation():
+    assert _customer_confirmed_offered_alternative("nao, obrigado", "22222222222-contract-2") is None
+
+
+# --- _append_document_pending_notice -------------------------------------------------------------
+
+
+def test_append_document_pending_notice_appends_when_agreement_confirmed_and_document_denied():
+    decision = _decision()
+    decision = decision.model_copy(update={"reply_text": "Seu acordo foi formalizado com sucesso!"})
+    tool_outcomes = [
+        {"tool": "confirmar_acordo", "input": {}, "result_text": "ok", "success": True, "stage_denied": False},
+        {
+            "tool": "gerar_documento",
+            "input": {},
+            "result_text": "not allowed from journey stage",
+            "success": False,
+            "stage_denied": True,
+        },
+    ]
+
+    result = _append_document_pending_notice(decision, tool_outcomes, "AgreementConfirmed")
+
+    assert result.reply_text == "Seu acordo foi formalizado com sucesso!" + _DOCUMENT_PENDING_SUFFIX
+
+
+def test_append_document_pending_notice_noop_when_milestone_is_not_agreement_confirmed():
+    decision = _decision().model_copy(update={"reply_text": "Ok"})
+    tool_outcomes = [
+        {
+            "tool": "gerar_documento",
+            "input": {},
+            "result_text": "not allowed from journey stage",
+            "success": False,
+            "stage_denied": True,
+        },
+    ]
+
+    result = _append_document_pending_notice(decision, tool_outcomes, "EligibilityChecked")
+
+    assert result.reply_text == "Ok"
+
+
+def test_append_document_pending_notice_noop_when_gerar_documento_was_not_attempted():
+    decision = _decision().model_copy(update={"reply_text": "Ok"})
+    tool_outcomes = [
+        {"tool": "confirmar_acordo", "input": {}, "result_text": "ok", "success": True, "stage_denied": False},
+    ]
+
+    result = _append_document_pending_notice(decision, tool_outcomes, "AgreementConfirmed")
+
+    assert result.reply_text == "Ok"
+
+
+def test_append_document_pending_notice_noop_when_gerar_documento_succeeded():
+    decision = _decision().model_copy(update={"reply_text": "Aqui esta o link do seu documento."})
+    tool_outcomes = [
+        {"tool": "gerar_documento", "input": {}, "result_text": "ok", "success": True, "stage_denied": False},
+    ]
+
+    result = _append_document_pending_notice(decision, tool_outcomes, "AgreementConfirmed")
+
+    assert result.reply_text == "Aqui esta o link do seu documento."
+
+
+def test_append_document_pending_notice_does_not_duplicate_on_repeat():
+    decision = _decision().model_copy(
+        update={"reply_text": "Acordo confirmado." + _DOCUMENT_PENDING_SUFFIX}
+    )
+    tool_outcomes = [
+        {
+            "tool": "gerar_documento",
+            "input": {},
+            "result_text": "not allowed from journey stage",
+            "success": False,
+            "stage_denied": True,
+        },
+    ]
+
+    result = _append_document_pending_notice(decision, tool_outcomes, "AgreementConfirmed")
+
+    assert result.reply_text == "Acordo confirmado." + _DOCUMENT_PENDING_SUFFIX
+
+
 # --- invoke_agent + JourneyMilestone wiring ------------------------------------------------------
 
 
@@ -736,6 +921,26 @@ def test_extract_cpf_candidates_ignores_assistant_messages():
 def test_extract_cpf_candidates_empty_when_no_cpf_shaped_text():
     assert _extract_cpf_candidates("ola") == frozenset()
     assert _extract_cpf_candidates(None) == frozenset()
+
+
+def test_extract_cpf_candidates_excludes_a_number_named_as_a_phone():
+    # A Brazilian mobile number is also 11 digits, so shape alone can't tell it apart from a CPF -
+    # excluded when the customer's own words name it as a phone number nearby.
+    assert _extract_cpf_candidates("meu telefone e 11987654321") == frozenset()
+    assert _extract_cpf_candidates("pode me ligar no celular 11987654321") == frozenset()
+    assert _extract_cpf_candidates("meu whatsapp e 11987654321") == frozenset()
+
+
+def test_extract_cpf_candidates_keeps_a_bare_number_with_no_phone_context():
+    # The overwhelmingly common case - a CPF typed with no surrounding context - must still work.
+    assert _extract_cpf_candidates("11987654321") == frozenset({"11987654321"})
+
+
+def test_extract_cpf_candidates_phone_context_does_not_leak_across_separate_numbers():
+    # Only the number actually near the phone-indicating word is excluded, not every CPF-shaped
+    # value in the message.
+    result = _extract_cpf_candidates("meu cpf e 11111111111, meu telefone e 11987654321")
+    assert result == frozenset({"11111111111"})
 
 
 def test_cpf_was_provided_by_customer_true_for_a_known_candidate():
@@ -970,3 +1175,44 @@ async def test_invoke_agent_registers_the_contract_guard_hooks():
     registered_event_types = [call.args[1] for call in agent.add_hook.call_args_list]
     assert AfterToolCallEvent in registered_event_types
     assert BeforeToolCallEvent in registered_event_types
+
+
+async def test_invoke_agent_resolves_offered_alternative_contract_on_plain_affirmative():
+    # Reproduces the real multi-contract bug end-to-end: the model offered an alternative
+    # contract in a previous turn (persisted as offered_alternative_contract_id), the customer's
+    # only reply this turn is a plain "sim" - active_contract_id must resolve to the offered
+    # contract regardless of what the model itself set (or didn't set) this turn.
+    decision = AgentDecision(intent="faq", confidence=0.9, reply_text="Perfeito!", requires_handoff=False)
+    agent = agent_returning(decision)
+
+    result = await invoke_agent(
+        agent,
+        "sim",
+        "ContractSelectionPending",
+        None,
+        make_settings(),
+        offered_alternative_contract_id="22222222222-contract-2",
+    )
+
+    assert result.active_contract_id == "22222222222-contract-2"
+
+
+async def test_invoke_agent_appends_document_pending_notice_on_agreement_confirmed_turn():
+    decision = AgentDecision(
+        intent="confirmacao_acordo",
+        confidence=0.9,
+        reply_text="Seu acordo foi formalizado com sucesso!",
+        requires_handoff=False,
+    )
+    agent = agent_returning_with_tool_events(
+        decision,
+        [
+            ("confirmar_acordo", success_result(), {}),
+            ("gerar_documento", stage_denied_result("gerar_documento", "AgreementConfirmed"), {}),
+        ],
+    )
+
+    result = await invoke_agent(agent, "confirmo", "ProposalSelected", None, make_settings())
+
+    assert result.state == "AgreementConfirmed"
+    assert result.reply_text == "Seu acordo foi formalizado com sucesso!" + _DOCUMENT_PENDING_SUFFIX
