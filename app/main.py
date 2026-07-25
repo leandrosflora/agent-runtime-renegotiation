@@ -15,7 +15,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from prometheus_client import Counter, Histogram
 
-from app.agent.core import build_agent, invoke_agent, is_explicit_confirmation_text
+from app.agent.core import _filter_history_since, build_agent, invoke_agent, is_explicit_confirmation_text
 from app.agent.mock import build_mock_decision
 from app.config import get_settings
 from app.context.history import fetch_recent_history
@@ -138,6 +138,10 @@ async def process(payload: ProcessRequest, request: Request) -> ProcessResponse:
                 payload.tenant_id,
                 payload.conversation_id,
             )
+            # Applies every turn, not just the reset turn - keeps the identification guard (which
+            # reads this same history for CPF candidates) from ever falling back on a customer's
+            # identity/context from an expired session.
+            history = _filter_history_since(history, payload.session_started_at)
             # Computed here, not received from conversation-orchestrator (which is now
             # skill-agnostic and can't host this Portuguese-specific judgment) - see
             # is_explicit_confirmation_text's docstring. Must happen before the agent (and its
@@ -169,6 +173,7 @@ async def process(payload: ProcessRequest, request: Request) -> ProcessResponse:
                     "last_intent": payload.last_intent,
                     "settings": runtime_settings,
                     "history": history,
+                    "session_reset": payload.session_reset,
                 }
                 structured_state = payload.structured_state or {}
                 if structured_state.get("contract_id") is not None:
@@ -177,6 +182,10 @@ async def process(payload: ProcessRequest, request: Request) -> ProcessResponse:
                     invoke_kwargs["active_simulation_id"] = structured_state["simulation_id"]
                 if structured_state.get("agreement_id") is not None:
                     invoke_kwargs["active_agreement_id"] = structured_state["agreement_id"]
+                if structured_state.get("offered_alternative_contract_id") is not None:
+                    invoke_kwargs["offered_alternative_contract_id"] = structured_state[
+                        "offered_alternative_contract_id"
+                    ]
 
                 decision = await invoke_agent(agent, **invoke_kwargs)
             finally:

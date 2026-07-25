@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_serializer
@@ -20,6 +21,13 @@ class ProcessRequest(BaseModel):
     # "Structured state is round-tripped opaquely" requirement) - this service is the one place
     # that knows contract_id/simulation_id/agreement_id are the keys it put there itself.
     structured_state: dict[str, Any] | None = Field(default=None, alias="StructuredState")
+    # True only on the turn conversation-orchestrator just found the 15-minute session window
+    # expired and reset it - lets the agent tell the customer explicitly instead of silently
+    # re-asking for identification as if nothing had happened.
+    session_reset: bool = Field(default=False, alias="SessionReset")
+    # Start of the current session window - used to discard conversation history from before it,
+    # so a reset conversation can't fall back on identity/context from an expired session.
+    session_started_at: datetime | None = Field(default=None, alias="SessionStartedAt")
 
 
 class AgentDecision(BaseModel):
@@ -44,6 +52,14 @@ class AgentDecision(BaseModel):
     # phrasings no fixed list could enumerate, without reintroducing the reliability problem the
     # freeform Intent field had (this isn't open classification, it's one narrow binary question).
     customer_accepted_proposal: bool = False
+    # Set only on the turn where the model's own reply pivots to a different contract as a
+    # fallback (e.g. "nao consegui simular para X, mas Y tambem esta elegivel - deseja seguir com
+    # Y?") - distinct from active_contract_id, which still points at the contract actually being
+    # processed. Lets a plain affirmative next turn ("sim") be resolved deterministically to the
+    # contract that was actually just offered (see core.py's
+    # _customer_confirmed_offered_alternative), instead of relying on the model to remember to
+    # update active_contract_id itself - confirmed live it doesn't reliably do that.
+    offered_alternative_contract_id: str | None = None
 
 
 class ProcessResponse(BaseModel):
@@ -77,6 +93,7 @@ class ProcessResponse(BaseModel):
                 ("contract_id", decision.active_contract_id),
                 ("simulation_id", decision.active_simulation_id),
                 ("agreement_id", decision.active_agreement_id),
+                ("offered_alternative_contract_id", decision.offered_alternative_contract_id),
             )
             if value is not None
         } or None
