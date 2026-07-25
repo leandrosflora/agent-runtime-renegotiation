@@ -15,7 +15,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from prometheus_client import Counter, Histogram
 
-from app.agent.core import build_agent, invoke_agent
+from app.agent.core import build_agent, invoke_agent, is_explicit_confirmation_text
 from app.agent.mock import build_mock_decision
 from app.config import get_settings
 from app.context.history import fetch_recent_history
@@ -129,7 +129,7 @@ async def process(payload: ProcessRequest, request: Request) -> ProcessResponse:
         if runtime_settings.mock_agent_enabled:
             decision = build_mock_decision(
                 text=payload.text,
-                journey_stage=payload.journey_stage,
+                journey_stage=payload.state,
                 last_intent=payload.last_intent,
             )
         else:
@@ -138,14 +138,24 @@ async def process(payload: ProcessRequest, request: Request) -> ProcessResponse:
                 payload.tenant_id,
                 payload.conversation_id,
             )
+            # Computed here, not received from conversation-orchestrator (which is now
+            # skill-agnostic and can't host this Portuguese-specific judgment) - see
+            # is_explicit_confirmation_text's docstring. Must happen before the agent (and its
+            # tools) are built: it gates confirmar_acordo via a signed claim tool-service-renegotiation
+            # checks, independent of anything the agent itself decides this turn.
+            confirmation_message_id = (
+                payload.message_id
+                if is_explicit_confirmation_text(payload.text, payload.state)
+                else None
+            )
             mcp_client, tool_service_tools = await get_tool_service_tools(
                 runtime_settings,
                 payload.tenant_id,
                 payload.conversation_id,
                 payload.message_id,
-                payload.journey_stage,
+                payload.state,
                 payload.journey_version,
-                payload.explicit_confirmation_message_id,
+                confirmation_message_id,
             )
             try:
                 tools = [
@@ -155,17 +165,18 @@ async def process(payload: ProcessRequest, request: Request) -> ProcessResponse:
                 agent = build_agent(runtime_settings, tools=tools)
                 invoke_kwargs = {
                     "text": payload.text,
-                    "journey_stage": payload.journey_stage,
+                    "journey_stage": payload.state,
                     "last_intent": payload.last_intent,
                     "settings": runtime_settings,
                     "history": history,
                 }
-                if payload.active_contract_id is not None:
-                    invoke_kwargs["active_contract_id"] = payload.active_contract_id
-                if payload.active_simulation_id is not None:
-                    invoke_kwargs["active_simulation_id"] = payload.active_simulation_id
-                if payload.active_agreement_id is not None:
-                    invoke_kwargs["active_agreement_id"] = payload.active_agreement_id
+                structured_state = payload.structured_state or {}
+                if structured_state.get("contract_id") is not None:
+                    invoke_kwargs["active_contract_id"] = structured_state["contract_id"]
+                if structured_state.get("simulation_id") is not None:
+                    invoke_kwargs["active_simulation_id"] = structured_state["simulation_id"]
+                if structured_state.get("agreement_id") is not None:
+                    invoke_kwargs["active_agreement_id"] = structured_state["agreement_id"]
 
                 decision = await invoke_agent(agent, **invoke_kwargs)
             finally:
