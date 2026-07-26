@@ -33,7 +33,7 @@ jobs:
         run: |
           MARKER="<!-- docs-reminder-bot -->"
           BODY="$MARKER
-          📚 Este PR muda código deste serviço. Se o comportamento documentado mudou (APIs, eventos, dependências, regras de negócio), atualize [`docs/services/agent-runtime-renegotiation.md`](https://github.com/leandrosflora/conversational-ai-platform-architecture/blob/main/docs/services/agent-runtime-renegotiation.md) em `conversational-ai-demo-arch`.
+          📚 Este PR muda código deste serviço. Se o comportamento documentado mudou (APIs, eventos, dependências, regras de negócio), atualize [\`docs/services/agent-runtime-renegotiation.md\`](https://github.com/leandrosflora/conversational-ai-platform-architecture/blob/main/docs/services/agent-runtime-renegotiation.md) em \`conversational-ai-demo-arch\`.
 
           _Lembrete automático — não bloqueia o merge._"
 
