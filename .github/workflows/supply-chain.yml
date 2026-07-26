@@ -1,0 +1,105 @@
+name: Supply chain
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  security-events: write
+  id-token: write
+  attestations: write
+
+jobs:
+  codeql:
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ github.event.repository.private }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: github/codeql-action/init@v4
+        with: { languages: python }
+      - uses: actions/setup-python@v7
+        with: { python-version: "3.12" }
+      - uses: github/codeql-action/autobuild@v4
+      - uses: github/codeql-action/analyze@v4
+
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ github.event.repository.private }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/dependency-review-action@v4
+        with: { fail-on-severity: high }
+
+  artifact-security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: aquasecurity/trivy-action@v0.36.0
+        name: Scan source and dependencies
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: source-trivy.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - if: always() && github.actor != 'dependabot[bot]'
+        continue-on-error: ${{ github.event.repository.private }}
+        uses: github/codeql-action/upload-sarif@v4
+        with: { sarif_file: source-trivy.sarif, category: trivy-source }
+      - name: Build immutable local image
+        run: docker build --pull --tag "local/${{ github.event.repository.name }}:${{ github.sha }}" .
+      - uses: aquasecurity/trivy-action@v0.36.0
+        name: Scan built image
+        with:
+          image-ref: local/${{ github.event.repository.name }}:${{ github.sha }}
+          format: sarif
+          output: image-trivy.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - if: always() && github.actor != 'dependabot[bot]'
+        continue-on-error: ${{ github.event.repository.private }}
+        uses: github/codeql-action/upload-sarif@v4
+        with: { sarif_file: image-trivy.sarif, category: trivy-image }
+      - if: always()
+        uses: anchore/sbom-action@v0
+        with: { path: ., format: spdx-json, output-file: source-sbom.spdx.json }
+      - if: always()
+        uses: anchore/sbom-action@v0
+        with:
+          image: local/${{ github.event.repository.name }}:${{ github.sha }}
+          format: spdx-json
+          output-file: image-sbom.spdx.json
+      - if: always()
+        name: Package image and checksums
+        run: |
+          docker save "local/${{ github.event.repository.name }}:${{ github.sha }}" -o image.tar
+          sha256sum image.tar source-sbom.spdx.json image-sbom.spdx.json > SHA256SUMS
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: supply-chain-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            source-trivy.sarif
+            image-trivy.sarif
+            source-sbom.spdx.json
+            image-sbom.spdx.json
+            image.tar
+            SHA256SUMS
+      - if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        uses: actions/attest-build-provenance@v3
+        with: { subject-path: image.tar }
+      - if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        uses: actions/attest-sbom@v3
+        with: { subject-path: image.tar, sbom-path: image-sbom.spdx.json }
