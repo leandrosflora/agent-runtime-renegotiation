@@ -21,15 +21,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  dependency-review:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/dependency-review-action@v4
-
   supply-chain:
-    uses: leandrosflora/conversational-ai-platform-architecture/.github/workflows/reusable-service-supply-chain.yml@main
+    uses: leandrosflora/conversational-ai-platform-architecture/.github/workflows/reusable-service-supply-chain.yml@v1
     with:
       service_name: agent-runtime-renegotiation
       language: python
